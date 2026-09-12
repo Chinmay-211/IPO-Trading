@@ -110,7 +110,8 @@ class IPODiscoveryService:
             if sym:
                 sym = sym.strip().upper()
 
-            price = float(record.get("issue_price") or 100.0)
+            price_raw = record.get("issue_price")
+            price = float(price_raw) if price_raw is not None and float(price_raw) > 0 else None
             now_iso = datetime.now().isoformat()
 
             conn = get_connection()
@@ -118,7 +119,7 @@ class IPODiscoveryService:
                 # Check for existing IPO by name or symbol
                 existing = conn.execute(
                     """
-                    SELECT id, symbol, listing_date FROM ipos
+                    SELECT id, symbol, listing_date, issue_price FROM ipos
                     WHERE lower(company_name) = lower(?)
                        OR (symbol IS NOT NULL AND symbol != '' AND symbol = ?)
                     """,
@@ -126,16 +127,17 @@ class IPODiscoveryService:
                 ).fetchone()
 
                 if existing:
-                    # Update symbol and listing date if previously missing
+                    # Update symbol, listing date, and issue price from live Chittorgarh
                     conn.execute(
                         """
                         UPDATE ipos
                         SET symbol = COALESCE(NULLIF(symbol, ''), ?),
                             listing_date = COALESCE(NULLIF(listing_date, ''), ?),
+                            issue_price = COALESCE(?, issue_price),
                             source = 'Chittorgarh'
                         WHERE id = ?
                         """,
-                        (sym, raw_listing, existing[0]),
+                        (sym, raw_listing, price, existing[0]),
                     )
                 else:
                     conn.execute(

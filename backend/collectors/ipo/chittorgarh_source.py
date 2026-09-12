@@ -432,10 +432,14 @@ class ChittorgarhIPODataSource(IPODataSource):
             company = re.sub(r"<[^>]+>", "", company).strip()
             sym = row.get("~nse_symbol") or cls._derive_symbol(company, slug)
             listing_str = parsed_dt.strftime("%Y-%m-%d") if parsed_dt else ""
+            issue_p = cls._parse_price(
+                row.get("Issue Price (Rs.)") or row.get("Issue Price") or row.get("~IssuePrice")
+            )
 
             discovered[ipo_id] = {
                 "company_name": company,
                 "symbol": sym.strip().upper() if sym else "IPO",
+                "issue_price": issue_p,
                 "ipo_id": ipo_id,
                 "ipo_type": ipo_type,
                 "ipo_open_date": row.get("Opening Date"),
@@ -447,6 +451,18 @@ class ChittorgarhIPODataSource(IPODataSource):
             }
 
         return list(discovered.values())
+
+    @classmethod
+    def _parse_price(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        text = str(value).replace(",", "")
+        matches = re.findall(r"\b\d+(?:\.\d+)?\b", text)
+        if matches:
+            nums = [float(m) for m in matches if float(m) > 0]
+            if nums:
+                return max(nums)
+        return None
 
     @staticmethod
     def _coerce_ipo_id(value) -> int | None:

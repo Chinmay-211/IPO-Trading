@@ -1361,7 +1361,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const token = revTokens[sym] || ipoData.token || 'RESOLVED';
         const isCurrent = document.getElementById('chart-symbol-select').value === sym;
         const pInfo = latestPrices[sym] || {};
-        const ltpText = pInfo.price ? `₹${Number(pInfo.price).toFixed(2)}` : (ipoData.issue_price ? `₹${ipoData.issue_price}` : '₹100.00');
+        const ltpText = pInfo.price ? `₹${Number(pInfo.price).toFixed(2)}` : (ipoData.issue_price ? `₹${Number(ipoData.issue_price).toFixed(2)}` : 'TBD');
         const chg = pInfo.change_pct !== undefined ? `${pInfo.change_pct >= 0 ? '+' : ''}${pInfo.change_pct.toFixed(2)}%` : '+0.00%';
         const chgColor = (pInfo.change_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)';
         const stage = globalData.status.market_state || 'CONTINUOUS';
@@ -1445,7 +1445,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         sym = input.trim().toUpperCase();
       }
 
-      let parsedPrice = 100.0;
+      let parsedPrice = null;
       if (issuePrice && issuePrice !== 'TBD') {
         const num = parseFloat(issuePrice);
         if (!isNaN(num) && num > 0) parsedPrice = num;
@@ -1479,12 +1479,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const symInput = document.getElementById('custom-ipo-sym');
       const priceInput = document.getElementById('custom-ipo-price');
       const sym = (symInput.value || '').trim().toUpperCase();
-      const price = parseFloat(priceInput.value || '100');
+      const rawPrice = (priceInput.value || '').trim();
+      const price = rawPrice ? parseFloat(rawPrice) : null;
       if (!sym) {
         showToast('Please enter an NSE symbol');
         return;
       }
-      await toggleSelectIPO(sym, sym, isNaN(price) || price <= 0 ? 100 : price, 'select');
+      await toggleSelectIPO(sym, sym, price, 'select');
       symInput.value = '';
       priceInput.value = '';
       showToast(`Added ${sym} to active trading session`);
@@ -2197,11 +2198,30 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
         if path in ("/api/ipos/select", "/api/select_ipo"):
             action = str(body_data.get("action", "select")).strip().lower()
             sym = sanitize_symbol(body_data.get("symbol", ""))
-            c_name = str(body_data.get("company_name", "")).strip()[:100]
-            try:
-                issue_p = float(body_data.get("issue_price", 100.0))
-            except (ValueError, TypeError):
-                issue_p = 100.0
+            issue_p = None
+            if body_data.get("issue_price"):
+                try:
+                    val = float(body_data["issue_price"])
+                    if val > 0:
+                        issue_p = val
+                except (ValueError, TypeError):
+                    pass
+
+            if issue_p is None and sym:
+                try:
+                    from backend.storage.database import get_connection
+                    conn = get_connection()
+                    try:
+                        row = conn.execute(
+                            "SELECT issue_price FROM ipos WHERE symbol = ? OR lower(company_name) = lower(?)",
+                            (sym, c_name or sym),
+                        ).fetchone()
+                        if row and row[0]:
+                            issue_p = float(row[0])
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
 
             if action == "deselect":
                 if not sym:

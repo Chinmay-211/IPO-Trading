@@ -309,23 +309,56 @@ def main():
 
     # Simulated Market Feed Loop (ONLY active if --feed sim is explicitly requested)
     if args.feed == "sim":
+        def _resolve_price_for_symbol(sym: str, candidate_dict: dict | None = None) -> float | None:
+            if candidate_dict and candidate_dict.get("issue_price"):
+                try:
+                    p = float(candidate_dict["issue_price"])
+                    if p > 0:
+                        return p
+                except (ValueError, TypeError):
+                    pass
+
+            try:
+                conn = get_connection()
+                try:
+                    row = conn.execute("SELECT issue_price FROM ipos WHERE symbol = ?", (sym,)).fetchone()
+                    if row and row[0]:
+                        p = float(row[0])
+                        if p > 0:
+                            return p
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+            matched = next((ipo for ipo in orchestrator.registered_ipos if str(ipo.get("symbol", "")).upper() == sym), None)
+            if matched and matched.get("issue_price"):
+                try:
+                    p = float(matched["issue_price"])
+                    if p > 0:
+                        return p
+                except (ValueError, TypeError):
+                    pass
+
+            return None
+
         def simulated_market_ticker_loop():
             """Ensure continuous simulated ticks flow every second during offline simulation."""
             current_prices: dict[str, float] = {}
             opening_prices: dict[str, float] = {}
             for c in candidates:
                 sym = c.get("symbol", "").upper()
-                try:
-                    ip = float(c.get("issue_price", 100.0))
-                except Exception:
-                    ip = 100.0
-                current_prices[sym] = ip
-                opening_prices[sym] = ip
+                p = _resolve_price_for_symbol(sym, c)
+                if p is not None:
+                    current_prices[sym] = p
+                    opening_prices[sym] = p
 
             for sym in prepared_symbols:
                 if sym not in current_prices:
-                    current_prices[sym] = 100.0
-                    opening_prices[sym] = 100.0
+                    p = _resolve_price_for_symbol(sym)
+                    if p is not None:
+                        current_prices[sym] = p
+                        opening_prices[sym] = p
 
             tick_count = 0
             standby_logged = False
@@ -347,17 +380,10 @@ def main():
                 standby_logged = False
                 for sym in active_symbols:
                     if sym not in current_prices:
-                        matched_ipo = next((ipo for ipo in orchestrator.registered_ipos if str(ipo.get("symbol", "")).upper() == sym), None)
-                        ip = 100.0
-                        if matched_ipo:
-                            try:
-                                ip = float(matched_ipo.get("issue_price", 100.0))
-                            except Exception:
-                                ip = 100.0
-                        if ip <= 0:
-                            ip = 100.0
-                        current_prices[sym] = ip
-                        opening_prices[sym] = ip
+                        p = _resolve_price_for_symbol(sym)
+                        if p is not None:
+                            current_prices[sym] = p
+                            opening_prices[sym] = p
 
                 now = datetime.now()
                 orchestrator.feed_status = "SIMULATED_STREAMING"
