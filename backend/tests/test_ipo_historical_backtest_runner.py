@@ -10,6 +10,31 @@ def test_ipo_historical_backtest_runner():
     print("IPO HISTORICAL BACKTEST RUNNER TEST")
     print("=" * 60)
 
+    from backend.storage.database import get_connection
+    _conn = get_connection()
+    try:
+        _conn.execute(
+            """
+            INSERT OR REPLACE INTO ipo_discoveries (id, chittorgarh_ipo_id, company_name, ipo_type, listing_date, detail_url, status, discovered_at, updated_at)
+            VALUES (19, 2574, 'Lohia Corp Ltd.', 'MAINBOARD', '2026-07-30', 'https://www.chittorgarh.com/ipo/lohia-corp-ipo/2574/', 'FAILED', '2026-08-25T20:57:34', '2026-08-26T15:47:42')
+            """
+        )
+        _conn.execute(
+            """
+            INSERT OR REPLACE INTO ipo_discoveries (id, chittorgarh_ipo_id, company_name, ipo_type, listing_date, detail_url, status, discovered_at, updated_at)
+            VALUES (17, 2826, 'Horizon Industrial Parks Ltd.', 'MAINBOARD', '2026-08-24', 'https://www.chittorgarh.com/ipo/horizon-industrial-parks-ipo/2826/', 'FAILED', '2026-08-25T20:57:34', '2026-08-26T15:47:42')
+            """
+        )
+        _conn.execute(
+            """
+            INSERT OR REPLACE INTO ipos (id, symbol, company_name, listing_date, issue_price, source, collected_at)
+            VALUES (201, 'HORIZONIND', 'Horizon Industrial Parks Ltd.', '2026-08-24', 500.0, 'test', '2026-08-24T10:00:00')
+            """
+        )
+        _conn.commit()
+    finally:
+        _conn.close()
+
     # ---------------------------------------------------------
     # TEST 1: PASS screening but symbol is unavailable.
     # Runner must refuse to fabricate a trade.

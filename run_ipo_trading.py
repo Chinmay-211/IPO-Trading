@@ -35,35 +35,17 @@ from backend.storage.database import get_connection, initialize_database
 
 
 def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
-    """Retrieve IPOs scheduled to list today, or upcoming Mainboard candidates (strictly excluding already-listed IPOs)."""
+    """Retrieve IPOs scheduled to list today (strictly matching target listing date)."""
     d_str = target_date or date.today().strftime("%Y-%m-%d")
     conn = get_connection()
     try:
-        # 1. Exact listing date match (listing today or requested date)
+        # Exact listing date match (listing today or requested date)
         rows = conn.execute(
             """
             SELECT symbol, company_name, listing_date, issue_price
             FROM ipos
             WHERE listing_date = ? AND symbol IS NOT NULL AND trim(symbol) != ''
             ORDER BY id ASC
-            """,
-            (d_str,),
-        ).fetchall()
-        if rows:
-            return [dict(r) for r in rows]
-
-        # 2. Upcoming listing dates (strictly > today or upcoming unannounced)
-        rows = conn.execute(
-            """
-            SELECT symbol, company_name, listing_date, issue_price
-            FROM ipos
-            WHERE (listing_date > ? OR listing_date IS NULL OR listing_date = '')
-              AND symbol IS NOT NULL AND trim(symbol) != ''
-            ORDER BY 
-              CASE WHEN listing_date IS NOT NULL AND trim(listing_date) != '' THEN 0 ELSE 1 END,
-              listing_date ASC,
-              id ASC
-            LIMIT 5
             """,
             (d_str,),
         ).fetchall()
@@ -79,9 +61,23 @@ def ensure_live_ipos_discovered(logger) -> None:
     """Ensure database has real Mainboard IPOs and 13-rule screening runs from Chittorgarh."""
     conn = get_connection()
     try:
-        # Strictly purge already-listed IPOs from past dates
-        conn.execute("DELETE FROM ipos WHERE listing_date IS NOT NULL AND listing_date != '' AND listing_date < date('now')")
-        conn.execute("DELETE FROM ipo_discoveries WHERE listing_date IS NOT NULL AND listing_date != '' AND listing_date < date('now')")
+        # Strictly purge already-listed IPOs from past dates in active candidate table (ipos)
+        today_str = date.today().strftime("%Y-%m-%d")
+        rows = conn.execute("SELECT id, listing_date FROM ipos WHERE listing_date IS NOT NULL AND listing_date != ''").fetchall()
+        for r in rows:
+            raw_d = str(r["listing_date"]).strip()
+            parsed_d = None
+            for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y"):
+                try:
+                    parsed_d = datetime.strptime(raw_d, fmt).strftime("%Y-%m-%d")
+                    break
+                except Exception:
+                    pass
+            if parsed_d:
+                if parsed_d < today_str:
+                    conn.execute("DELETE FROM ipos WHERE id = ?", (r["id"],))
+                elif parsed_d != raw_d:
+                    conn.execute("UPDATE ipos SET listing_date = ? WHERE id = ?", (parsed_d, r["id"]))
         conn.commit()
 
         run_count = conn.execute("SELECT count(*) FROM ipo_screening_runs").fetchone()[0]
