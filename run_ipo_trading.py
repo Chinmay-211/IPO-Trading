@@ -35,11 +35,11 @@ from backend.storage.database import get_connection, initialize_database
 
 
 def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
-    """Retrieve IPOs scheduled to list today, or upcoming/recent active Mainboard candidates."""
+    """Retrieve IPOs scheduled to list today, or upcoming Mainboard candidates (strictly excluding already-listed IPOs)."""
     d_str = target_date or date.today().strftime("%Y-%m-%d")
     conn = get_connection()
     try:
-        # 1. Exact listing date match (today or requested date)
+        # 1. Exact listing date match (listing today or requested date)
         rows = conn.execute(
             """
             SELECT symbol, company_name, listing_date, issue_price
@@ -52,12 +52,13 @@ def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
         if rows:
             return [dict(r) for r in rows]
 
-        # 2. Upcoming listing dates (>= today)
+        # 2. Upcoming listing dates (strictly > today or upcoming unannounced)
         rows = conn.execute(
             """
             SELECT symbol, company_name, listing_date, issue_price
             FROM ipos
-            WHERE listing_date >= ? AND symbol IS NOT NULL AND trim(symbol) != ''
+            WHERE (listing_date > ? OR listing_date IS NULL OR listing_date = '')
+              AND symbol IS NOT NULL AND trim(symbol) != ''
             ORDER BY listing_date ASC, id ASC
             LIMIT 5
             """,
@@ -66,34 +67,7 @@ def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
         if rows:
             return [dict(r) for r in rows]
 
-        # 3. Top evaluated Mainboard candidates from 13-rule screening
-        rows = conn.execute(
-            """
-            SELECT i.symbol, i.company_name, i.listing_date, i.issue_price
-            FROM ipos i
-            JOIN ipo_screening_runs r ON (
-                lower(replace(replace(r.company_name, ' Ltd.', ''), ' Limited', '')) =
-                lower(replace(replace(i.company_name, ' Ltd.', ''), ' Limited', ''))
-            )
-            WHERE i.symbol IS NOT NULL AND trim(i.symbol) != ''
-            ORDER BY r.passed DESC, r.id DESC
-            LIMIT 5
-            """,
-        ).fetchall()
-        if rows:
-            return [dict(r) for r in rows]
-
-        # 4. Any available Mainboard IPOs in database
-        rows = conn.execute(
-            """
-            SELECT symbol, company_name, listing_date, issue_price
-            FROM ipos
-            WHERE symbol IS NOT NULL AND trim(symbol) != ''
-            ORDER BY id DESC
-            LIMIT 5
-            """,
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return []
     finally:
         conn.close()
 
@@ -102,6 +76,11 @@ def ensure_live_ipos_discovered(logger) -> None:
     """Ensure database has real Mainboard IPOs and 13-rule screening runs from Chittorgarh."""
     conn = get_connection()
     try:
+        # Strictly purge already-listed IPOs from past dates
+        conn.execute("DELETE FROM ipos WHERE listing_date IS NOT NULL AND listing_date != '' AND listing_date < date('now')")
+        conn.execute("DELETE FROM ipo_discoveries WHERE listing_date IS NOT NULL AND listing_date != '' AND listing_date < date('now')")
+        conn.commit()
+
         run_count = conn.execute("SELECT count(*) FROM ipo_screening_runs").fetchone()[0]
         ipo_count = conn.execute("SELECT count(*) FROM ipos").fetchone()[0]
     except Exception:

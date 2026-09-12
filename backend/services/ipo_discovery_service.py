@@ -62,6 +62,19 @@ class IPODiscoveryService:
                     "error": str(exc),
                 })
 
+        # Purge any already-listed historical IPOs from SQLite
+        try:
+            from backend.storage.database import get_connection
+            conn = get_connection()
+            try:
+                conn.execute("DELETE FROM ipos WHERE listing_date IS NOT NULL AND listing_date != '' AND listing_date < date('now')")
+                conn.execute("DELETE FROM ipo_discoveries WHERE listing_date IS NOT NULL AND listing_date != '' AND listing_date < date('now')")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
         return {
             "fetched": len(records),
             "inserted": inserted,
@@ -72,18 +85,31 @@ class IPODiscoveryService:
     def _sync_to_ipos(self, record: dict) -> None:
         """Synchronize discovered Indian Mainboard IPO to ipos table."""
         try:
-            from datetime import datetime
+            from datetime import date, datetime
             from backend.storage.database import get_connection
 
             c_name = record.get("company_name", "").strip()
             if not c_name:
                 return
 
+            raw_listing = (record.get("listing_date") or "").strip()
+            # Do NOT sync already-listed IPOs
+            if raw_listing:
+                try:
+                    for fmt in ("%Y-%m-%d", "%d-%b-%Y"):
+                        try:
+                            if datetime.strptime(raw_listing, fmt).date() < date.today():
+                                return
+                            break
+                        except ValueError:
+                            pass
+                except Exception:
+                    pass
+
             sym = record.get("symbol")
             if sym:
                 sym = sym.strip().upper()
 
-            raw_listing = record.get("listing_date")
             price = float(record.get("issue_price") or 100.0)
             now_iso = datetime.now().isoformat()
 

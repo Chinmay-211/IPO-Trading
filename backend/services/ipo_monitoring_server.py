@@ -90,9 +90,9 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
             matrix = []
             for run in runs:
                 display_date, dt = _resolve_listing_date(run["listing_date"], run["ipo_close_date"])
-                if upcoming_only:
-                    if dt is not None and dt < today:
-                        continue
+                # STRICT USER REQUIREMENT: There is no need of already listed IPOs!
+                if dt is not None and dt < today:
+                    continue
 
                 state_label, badge_class = _get_ipo_state(run["ipo_open_date"], run["ipo_close_date"], dt)
                 run_dict = dict(run)
@@ -898,10 +898,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           </p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <select id="matrix-filter" class="btn" style="font-size:11px; padding:6px 10px; background:#16202e; border:1px solid var(--border); color:#fff;" onchange="filterMatrixView(this.value)">
-            <option value="all" selected>All Mainboard IPOs</option>
-            <option value="upcoming">Upcoming Only</option>
-          </select>
+          <span class="badge badge-paper" style="font-size:11px; padding:6px 10px;">📅 Upcoming & Today's IPOs</span>
           <input type="text" id="custom-ipo-sym" class="btn" style="width:140px; text-align:left; background:#16202e; border:1px solid var(--border); padding:6px 10px; font-size:12px; color:#fff; text-transform:uppercase;" placeholder="NSE Symbol">
           <input type="number" id="custom-ipo-price" class="btn" style="width:90px; text-align:left; background:#16202e; border:1px solid var(--border); padding:6px 10px; font-size:12px; color:#fff;" placeholder="Price (₹)">
           <button class="btn btn-primary" onclick="addCustomIPO()" style="font-size:11px; padding:6px 12px; font-weight:700;">➕ Add to Trade</button>
@@ -1232,12 +1229,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
-    let matrixViewFilter = 'all';
-    function filterMatrixView(val) {
-      matrixViewFilter = val;
-      fetchMatrixData();
-    }
-
     function deriveCleanSymbol(name) {
       if (!name) return 'IPO';
       const clean = name.replace(/\b(Ltd|Limited|India|Technologies|Services|Solutions|Industries|Holdings|Infra|Infrastructure|Enterprises|Corp|Corporation|Co|Company)\b/gi, '')
@@ -1248,8 +1239,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     async function fetchMatrixData() {
       try {
-        const query = matrixViewFilter === 'upcoming' ? '?upcoming=true' : (matrixViewFilter === 'all' ? '?upcoming=false' : '');
-        const res = await apiFetch('/api/matrix' + query).then(r => r.json());
+        const res = await apiFetch('/api/matrix').then(r => r.json());
         globalData.matrix = Array.isArray(res) ? res : (res.matrix || []);
         renderMatrix();
       } catch (e) {
@@ -2039,15 +2029,7 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/matrix":
-            query_params = parse_qs(parsed.query)
-            upcoming_param = query_params.get("upcoming", [None])[0]
-            if upcoming_param is not None:
-                upcoming_flag = upcoming_param.lower() in ("true", "1", "yes")
-                matrix = get_recent_screening_matrix(limit=None, upcoming_only=upcoming_flag)
-            else:
-                matrix = get_recent_screening_matrix(limit=None, upcoming_only=True)
-                if not matrix:
-                    matrix = get_recent_screening_matrix(limit=None, upcoming_only=False)
+            matrix = get_recent_screening_matrix(limit=None, upcoming_only=True)
             self._send_json(200, {"matrix": matrix})
             return
 

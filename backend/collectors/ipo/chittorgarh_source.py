@@ -111,20 +111,19 @@ class ChittorgarhIPODataSource(IPODataSource):
         )
 
         today = date.today()
-        # Active timetable queries: current month/year, 2025, 2024
+        # Query Report 82 (Current/Upcoming Mainboard IPOs) first, fallback to Report 118
         queries = [
-            (today.month, today.year, None),
-            (1, 2025, "2024-25"),
-            (9, 2024, "2024-25"),
+            (82, today.month, today.year, None),
+            (118, today.month, today.year, None),
         ]
 
         records = []
-        for m, y, fy in queries:
+        for r_id, m, y, fy in queries:
             try:
                 page = 1
                 total_pages = 1
                 while page <= total_pages:
-                    api_url = self._build_api_url(page=page, month=m, year=y, financial_year=fy)
+                    api_url = self._build_api_url(report_id=r_id, page=page, month=m, year=y, financial_year=fy)
                     response = self.session.get(api_url, timeout=15)
                     if response.status_code != 200:
                         break
@@ -157,6 +156,7 @@ class ChittorgarhIPODataSource(IPODataSource):
     @classmethod
     def _build_api_url(
         cls,
+        report_id: int = 82,
         page: int = 1,
         month: int | None = None,
         year: int | None = None,
@@ -173,7 +173,7 @@ class ChittorgarhIPODataSource(IPODataSource):
             )
 
         return (
-            f"{cls.API_BASE_URL}/cloud/report/data-read/118/{page}/"
+            f"{cls.API_BASE_URL}/cloud/report/data-read/{report_id}/{page}/"
             f"{m}/{y}/{financial_year}/0/mainboard/0/"
             "?search="
         )
@@ -378,15 +378,29 @@ class ChittorgarhIPODataSource(IPODataSource):
     ) -> list[dict]:
         discovered = {}
 
+        today = date.today()
         for row in rows:
             ipo_id = cls._coerce_ipo_id(row.get("~id"))
-            slug = str(row.get("~urlrewrite_folder_name") or "").strip()
+            if ipo_id is None:
+                m_id = re.search(r"/ipo/[^/?#]+/(\d+)/?", str(row.get("Company", "")))
+                if m_id:
+                    ipo_id = int(m_id.group(1))
+
+            slug = str(
+                row.get("~URLRewrite_Folder_Name")
+                or row.get("~urlrewrite_folder_name")
+                or ""
+            ).strip()
+            if not slug:
+                m_slug = re.search(r"/ipo/([^/?#]+)/\d+/?", str(row.get("Company", "")))
+                if m_slug:
+                    slug = m_slug.group(1)
 
             if ipo_id is None or not slug:
                 continue
 
             ipo_type = cls._normalize_ipo_type(
-                row.get("Issue Type")
+                row.get("Issue Category") or row.get("Issue Type")
             )
             if ipo_type != "MAINBOARD":
                 continue
@@ -398,17 +412,30 @@ class ChittorgarhIPODataSource(IPODataSource):
             if ipo_id in discovered:
                 continue
 
+            raw_listing = row.get("Listing Date") or row.get("~ListingDate")
+            parsed_dt = cls._parse_date(raw_listing)
+            if not parsed_dt and row.get("~ListingDate"):
+                parsed_dt = cls._parse_date(row.get("~ListingDate"))
+
+            # STRICT USER REQUIREMENT: There is no need of already listed IPOs!
+            if parsed_dt is not None and parsed_dt < today:
+                continue
+
+            # Skip if closing date was more than 14 days ago and no listing date
+            c_dt = cls._parse_date(row.get("Closing Date") or row.get("~IssueCloseDate"))
+            if parsed_dt is None and c_dt is not None and (today - c_dt).days > 14:
+                continue
+
             company = str(
                 row.get("Company") or cls._name_from_url(detail_url)
             ).strip()
-            sym = cls._derive_symbol(company, slug)
-            raw_listing = row.get("Listing Date")
-            parsed_dt = cls._parse_date(raw_listing)
-            listing_str = parsed_dt.strftime("%Y-%m-%d") if parsed_dt else raw_listing
+            company = re.sub(r"<[^>]+>", "", company).strip()
+            sym = row.get("~nse_symbol") or cls._derive_symbol(company, slug)
+            listing_str = parsed_dt.strftime("%Y-%m-%d") if parsed_dt else ""
 
             discovered[ipo_id] = {
                 "company_name": company,
-                "symbol": sym,
+                "symbol": sym.strip().upper() if sym else "IPO",
                 "ipo_id": ipo_id,
                 "ipo_type": ipo_type,
                 "ipo_open_date": row.get("Opening Date"),
@@ -601,8 +628,15 @@ class ChittorgarhIPODataSource(IPODataSource):
             return value
 
         text = str(value).strip()
+        if "T" in text:
+            text = text.split("T")[0]
+        text = re.sub(r"<[^>]+>", "", text).strip()
 
         formats = [
+            "%Y-%m-%d",
+            "%d-%b-%Y",
+            "%d-%B-%Y",
+            "%d-%b-%y",
             "%d-%m-%Y",
             "%d/%m/%Y",
             "%d %b %Y",
