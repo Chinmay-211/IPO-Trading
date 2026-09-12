@@ -939,7 +939,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <!-- TAB 2: Selected IPOs -->
   <div id="tab-selected" class="tab-pane">
-    <h3 id="selected-tab-heading" style="font-size:15px; margin-bottom:12px; color:#fff;">Candidate IPOs Prepared for Listing Session</h3>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+      <h3 id="selected-tab-heading" style="font-size:15px; margin:0; color:#fff;">Candidate IPOs Prepared for Listing Session</h3>
+      <button id="btn-unselect-all" class="btn btn-danger" style="display:none; font-size:11px; padding:4px 10px; font-weight:700;" onclick="unselectAllIPOs()">✕ Unselect All</button>
+    </div>
     <div class="ipo-cards-grid" id="selected-ipos-grid">
       <div class="empty-msg">No candidate IPOs prepared.</div>
     </div>
@@ -1394,6 +1397,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const revTokens = {};
       Object.keys(tokens).forEach(tok => { revTokens[tokens[tok]] = tok; });
 
+      const unselectAllBtn = document.getElementById('btn-unselect-all');
+      if (unselectAllBtn) {
+        unselectAllBtn.style.display = symbols.length > 0 ? 'inline-block' : 'none';
+      }
+
       if (symbols.length === 0) {
         const isWk = (stage === 'WEEKEND_CLOSED' || isWeekend);
         const nextIpo = (globalData.status && globalData.status.next_scheduled_ipo) || null;
@@ -1429,6 +1437,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const chg = pInfo.change_pct !== undefined ? `${pInfo.change_pct >= 0 ? '+' : ''}${pInfo.change_pct.toFixed(2)}%` : '+0.00%';
         const chgColor = (pInfo.change_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)';
         const stageColor = (stage === 'WEEKEND_CLOSED' || stage === 'CLOSED') ? 'var(--amber)' : 'var(--green)';
+        const safeName = (ipoData.company_name || sym).replace(/'/g, "\\'");
 
         return `
           <div class="ipo-card ${isCurrent ? 'active-ipo' : ''}">
@@ -1446,7 +1455,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
               <span style="font-size:11px; color:var(--muted);">13-Rule Check: <strong>PASSED</strong></span>
-              <button class="btn" style="padding:4px 8px; font-size:11px;" onclick="selectChartSymbol('${sym}')">View Live Chart</button>
+              <div style="display:flex; gap:6px;">
+                <button class="btn" style="padding:4px 8px; font-size:11px;" onclick="selectChartSymbol('${sym}')">View Live Chart</button>
+                <button class="btn btn-danger" style="padding:4px 8px; font-size:11px; background:rgba(239,68,68,0.18); border:1px solid var(--red); color:var(--red); font-weight:700;" onclick="toggleSelectIPO('${sym}', '${safeName}', null, 'deselect')">✕ Unselect</button>
+              </div>
             </div>
           </div>
         `;
@@ -1500,7 +1512,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
-
     async function toggleSelectIPO(symbol, companyName, issuePrice, action) {
       let sym = symbol;
       if (action === 'select' && (!sym || sym === 'IPO')) {
@@ -1528,14 +1539,38 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         }).then(r => r.json());
 
         if (res.status === 'OK') {
-          await Promise.all([fetchStatus(), fetchReport(), fetchIPOs(), fetchBackendActivity()]);
-          renderMatrix();
+          showToast(action === 'deselect' ? `Removed ${sym} from active trading candidates` : `Added ${sym} to active trading candidates`);
+          await Promise.all([fetchData(), fetchBackendActivity()]);
+          if (document.getElementById('tab-matrix').classList.contains('active')) {
+            renderMatrix();
+          }
         } else {
           alert('Error: ' + (res.message || res.error || 'Failed to update selection'));
         }
       } catch (err) {
         console.error('Failed to toggle IPO selection', err);
         alert('Network error while updating IPO selection.');
+      }
+    }
+
+    async function unselectAllIPOs() {
+      const symbols = (globalData.report && globalData.report.registered_symbols) ||
+                      (globalData.status && globalData.status.registered_symbols) || [];
+      if (symbols.length === 0) return;
+      if (!confirm(`Remove all ${symbols.length} candidate IPO(s) from active trading session?`)) return;
+      for (const sym of symbols) {
+        try {
+          await apiFetch('/api/ipos/select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'deselect', symbol: sym })
+          });
+        } catch (e) {}
+      }
+      showToast('All candidate IPOs removed from active session');
+      await Promise.all([fetchData(), fetchBackendActivity()]);
+      if (document.getElementById('tab-matrix').classList.contains('active')) {
+        renderMatrix();
       }
     }
 
