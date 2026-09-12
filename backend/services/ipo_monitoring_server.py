@@ -1342,8 +1342,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       if (symbols.length === 0) {
         chartSelect.innerHTML = '<option value="">(Standby - 0 IPOs listing today)</option>';
       } else {
-        chartSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
-        if (currChart && symbols.includes(currChart)) chartSelect.value = currChart;
+        const existingOptions = Array.from(chartSelect.options).map(o => o.value).filter(Boolean);
+        const symbolsChanged = existingOptions.length !== symbols.length || !symbols.every((s, i) => s === existingOptions[i]);
+        if (symbolsChanged) {
+          chartSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+          chartSelect.value = (currChart && symbols.includes(currChart)) ? currChart : symbols[0];
+        } else if (!chartSelect.value && symbols.length > 0) {
+          chartSelect.value = symbols[0];
+        }
       }
 
       // Render Selected IPO Cards
@@ -1463,7 +1469,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
               <td class="${isBuy ? 'tag-buy' : 'tag-sell'}">${o.action || o.side}</td>
               <td>${o.quantity}</td>
               <td>₹${Number(o.price || 0).toFixed(2)}</td>
-              <td>0.05%</td>
+              <td>${((globalData.report && globalData.report.slippage_pct !== undefined ? globalData.report.slippage_pct : 0.0005) * 100).toFixed(2)}%</td>
               <td style="color:${o.pnl > 0 ? 'var(--green)' : o.pnl < 0 ? 'var(--red)' : '#fff'}; font-weight:700;">${pnlText}</td>
               <td>${o.reason || 'Strategy rule execution'}</td>
             </tr>
@@ -1596,7 +1602,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const symBadge = m.symbol ? `<span class="badge badge-paper" style="margin-left:6px;">${m.symbol}</span>` : `<span class="badge" style="margin-left:6px; opacity:0.65;">${sym}</span>`;
         const priceText = (m.issue_price && m.issue_price !== 'TBD') ? `₹${Number(m.issue_price).toFixed(2)}` : 'TBD';
         const listDate = m.listing_date || 'Upcoming';
-        const listTime = listDate !== 'Upcoming' ? '10:00 AM IST' : '10:00 AM IST';
+        const listTime = (listDate && listDate !== 'Upcoming' && listDate !== 'TBD') ? '10:00 AM IST' : '—';
         const stateBadge = m.ipo_state_badge === 'badge-green' ? 'badge-paper' : (m.ipo_state_badge === 'badge-cyan' ? 'badge-open' : 'badge-amber');
         const stateText = m.ipo_state || 'Upcoming';
 
@@ -1613,11 +1619,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             <td><span style="color:var(--text); font-family:monospace;">⏰ ${listTime}</span></td>
             <td><strong style="color:var(--green); font-size:13px;">${priceText}</strong></td>
             <td><span class="${isPass ? 'pill-pass' : 'pill-fail'}">${m.strategy_result}</span></td>
-            <td><span class="pill-pass">${m.passed} Passed / ${m.failed} Failed</span></td>
+            <td><span class="${m.failed > 0 ? 'pill-fail' : 'pill-pass'}">${m.passed} Passed / ${m.failed} Failed</span></td>
             <td>${r1.passed ? '✅ ' + (r1.actual_value || 'MAINBOARD') : '❌ ' + (r1.actual_value || 'Failed')}</td>
             <td>${r2.passed ? '✅ ' + (r2.actual_value || 'Passed') : '❌ ' + (r2.actual_value || 'Failed')}</td>
             <td>${r3.passed ? '✅ ' + (r3.actual_value || 'Passed') : '❌ ' + (r3.actual_value || 'Failed')}</td>
-            <td><span class="pill-pass">Clean Audit</span></td>
+            <td><span class="${isPass ? 'pill-pass' : 'pill-fail'}">${isPass ? 'Clean Audit' : 'Rules Failed'}</span></td>
             <td style="text-align:center;">${actionBtn}</td>
           </tr>
         `;
@@ -1629,11 +1635,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       switchTab('chart');
     }
 
+    let pollInterval = null;
+    let chartPollInterval = null;
+
     // Dynamic Candlestick Chart Rendering
     async function renderChart() {
-      const symbol = document.getElementById('chart-symbol-select').value;
+      let symbol = document.getElementById('chart-symbol-select').value;
       const canvas = document.getElementById('candleChart');
       if (!canvas) return;
+
+      if (!symbol) {
+        const select = document.getElementById('chart-symbol-select');
+        if (select && select.options.length > 0 && select.options[0].value) {
+          select.selectedIndex = 0;
+          symbol = select.value;
+        }
+      }
 
       if (!symbol) {
         const ctx = canvas.getContext('2d');
@@ -1656,13 +1673,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       let candles = [];
       let currentCandle = null;
       let latestPrice = null;
+      let issuePrice = null;
       try {
         const res = await apiFetch(`/api/candles?symbol=${symbol}`).then(r => r.json());
         candles = res.candles || [];
         currentCandle = res.current_candle || null;
         latestPrice = res.latest_price || null;
+        issuePrice = res.issue_price || null;
       } catch (e) {
         candles = [];
+      }
+
+      if (!issuePrice && globalData.ipos && globalData.ipos.registered_ipos) {
+        const match = globalData.ipos.registered_ipos.find(r => r.symbol === symbol);
+        if (match && match.issue_price) issuePrice = match.issue_price;
       }
 
       const ctx = canvas.getContext('2d');
@@ -1685,13 +1709,51 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const activePrice = latestPrice || (currentCandle ? currentCandle.close_price : (candles.length > 0 ? candles[candles.length - 1].close_price : null));
 
       document.getElementById('chart-info').innerText =
-        `Symbol: ${symbol} | LTP: ${activePrice ? '₹' + Number(activePrice).toFixed(2) : '--'} | Completed 1m: ${candles.length} | Active Candle: ${currentCandle ? 'Forming...' : 'Ready'} | Baseline: First 5 Candles`;
+        `Symbol: ${symbol} | LTP: ${activePrice ? '₹' + Number(activePrice).toFixed(2) : (issuePrice ? 'Base ₹' + Number(issuePrice).toFixed(2) : '--')} | Completed 1m: ${candles.length} | Active Candle: ${currentCandle ? '🟢 Forming Live' : 'Ready'} | Baseline: First 5 Candles`;
 
       if (allCandles.length === 0 && !activePrice) {
-        ctx.fillStyle = '#8896a8';
-        ctx.font = '13px sans-serif';
+        const benchPrice = issuePrice ? Number(issuePrice) : null;
+        if (!benchPrice) {
+          ctx.fillStyle = '#8896a8';
+          ctx.font = '13px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Waiting for initial price tick (Continuous trading commences at 10:00 AM IST)...', width / 2, height / 2);
+          return;
+        }
+
+        const minPrice = benchPrice * 0.95;
+        const maxPrice = benchPrice * 1.05;
+        const priceRange = maxPrice - minPrice;
+        function getInitY(p) { return height - 30 - ((p - minPrice) / priceRange) * (height - 60); }
+        function drawInitHLine(price, color, label, isDash = true) {
+          const y = getInitY(price);
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          if (isDash) ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(40, y);
+          ctx.lineTo(width - 80, y);
+          ctx.stroke();
+          ctx.fillStyle = color;
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`${label} ₹${price.toFixed(1)}`, width - 75, y + 3);
+          ctx.restore();
+        }
+
+        drawInitHLine(benchPrice, '#ffffff', 'ISSUE PRICE');
+        drawInitHLine(benchPrice * 0.98, '#f59e0b', '-2% DIP');
+        drawInitHLine(benchPrice * 1.04, '#38bdf8', '2R TARGET');
+        drawInitHLine(benchPrice * 0.97, '#ef4444', 'SL (3%)');
+
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Waiting for initial price tick (Continuous trading commences at 10:00 AM IST)...', width / 2, height / 2);
+        ctx.fillText(`📡 LIVE MARKET FEED ACTIVE: Candidate ${symbol} Ready`, width / 2, height / 2 - 14);
+        ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillText(`Angel One SmartWebSocketV2 Subscribed. Continuous trading commences at 10:00 AM IST (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
         return;
       }
 
@@ -1709,11 +1771,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
 
       if (minPrice === Infinity || maxPrice === -Infinity) {
-        minPrice = (activePrice || 100) * 0.98;
-        maxPrice = (activePrice || 100) * 1.02;
+        minPrice = (activePrice || issuePrice || 100) * 0.98;
+        maxPrice = (activePrice || issuePrice || 100) * 1.02;
       }
 
-      const openPrice = allCandles.length > 0 ? allCandles[0].open_price : (activePrice || 100);
+      const openPrice = allCandles.length > 0 ? allCandles[0].open_price : (activePrice || issuePrice || 100);
       const dipLevel = openPrice * 0.98;
       const targetLevel = openPrice * 1.04;
       const stopLevel = openPrice * 0.97;
@@ -1754,7 +1816,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
 
       if (allCandles.length > 0) {
-        const candleWidth = Math.max(6, Math.min(22, (width - 120) / allCandles.length - 4));
+        const candleWidth = Math.max(8, Math.min(26, (width - 120) / allCandles.length - 4));
         const step = (width - 120) / allCandles.length;
 
         allCandles.forEach((c, idx) => {
@@ -1783,8 +1845,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
           if (c._isActive) {
             ctx.strokeStyle = '#38bdf8';
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 2;
             ctx.strokeRect(x - candleWidth / 2 - 1, bodyTop - 1, candleWidth + 2, bodyHeight + 2);
+
+            // Active live tag above candle
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('LIVE', x, Math.min(yHigh, bodyTop) - 6);
           }
         });
       }
@@ -1803,9 +1871,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     function updatePolling(val) {
       if (pollInterval) clearInterval(pollInterval);
+      if (chartPollInterval) clearInterval(chartPollInterval);
       const ms = parseInt(val, 10);
       if (ms > 0 && getAuthHeader()) {
         pollInterval = setInterval(fetchData, ms);
+        chartPollInterval = setInterval(() => {
+          const chartTab = document.getElementById('tab-chart');
+          if (chartTab && chartTab.classList.contains('active')) {
+            renderChart();
+          }
+        }, 1000);
       }
     }
 
@@ -2043,40 +2118,70 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             query_params = parse_qs(parsed.query)
             target_symbol = query_params.get("symbol", [""])[0].strip().upper()
 
+            # Auto-default to first prepared candidate if no symbol passed
+            if not target_symbol and orchestrator:
+                if getattr(orchestrator, "registered_ipos", None):
+                    target_symbol = str(orchestrator.registered_ipos[0].get("symbol", "")).strip().upper()
+                elif orchestrator.engine and orchestrator.engine.pipelines:
+                    target_symbol = list(orchestrator.engine.pipelines.keys())[0].strip().upper()
+
             candles: list[dict[str, Any]] = []
             current_candle = None
             latest_price = None
+            issue_price = None
 
-            if orchestrator and orchestrator.engine:
-                for record in orchestrator.engine.results:
-                    if not target_symbol or record.get("symbol") == target_symbol:
-                        candle_data = record.get("candle")
-                        if candle_data:
-                            candles.append(candle_data)
+            if orchestrator:
+                for r in getattr(orchestrator, "registered_ipos", []):
+                    if str(r.get("symbol", "")).strip().upper() == target_symbol:
+                        issue_price = r.get("issue_price")
+                        break
 
-                # Get active forming candle from candle builder
-                cb = getattr(orchestrator.engine, "candle_builder", None)
-                if cb and hasattr(cb, "_active") and target_symbol in cb._active:
-                    ac = cb._active[target_symbol]
-                    current_candle = {
-                        "symbol": ac.symbol,
-                        "open_price": ac.open,
-                        "high_price": ac.high,
-                        "low_price": ac.low,
-                        "close_price": ac.close,
-                        "volume": ac.volume,
-                        "timestamp": ac.timestamp.isoformat(),
-                    }
-                    latest_price = ac.close
+                if orchestrator.engine:
+                    for record in orchestrator.engine.results:
+                        rec_sym = str(record.get("symbol", "")).strip().upper()
+                        if not target_symbol or rec_sym == target_symbol:
+                            candle_data = record.get("candle")
+                            if candle_data:
+                                candles.append(candle_data)
 
-                if latest_price is None and hasattr(orchestrator, "latest_prices") and target_symbol in orchestrator.latest_prices:
-                    latest_price = orchestrator.latest_prices[target_symbol].get("price")
+                    # Get active forming candle from candle builder
+                    cb = getattr(orchestrator.engine, "candle_builder", None)
+                    if cb and hasattr(cb, "_active"):
+                        ac = cb._active.get(target_symbol)
+                        if ac is None:
+                            for k, v in cb._active.items():
+                                if str(k).strip().upper() == target_symbol:
+                                    ac = v
+                                    break
+                        if ac is not None:
+                            current_candle = {
+                                "symbol": ac.symbol,
+                                "open_price": ac.open,
+                                "high_price": ac.high,
+                                "low_price": ac.low,
+                                "close_price": ac.close,
+                                "volume": ac.volume,
+                                "timestamp": ac.timestamp.isoformat() if hasattr(ac.timestamp, "isoformat") else str(ac.timestamp),
+                                "is_forming": True,
+                            }
+                            latest_price = ac.close
+
+                    if latest_price is None and hasattr(orchestrator, "latest_prices"):
+                        p_info = orchestrator.latest_prices.get(target_symbol)
+                        if not p_info:
+                            for k, v in orchestrator.latest_prices.items():
+                                if str(k).strip().upper() == target_symbol:
+                                    p_info = v
+                                    break
+                        if p_info:
+                            latest_price = p_info.get("price")
 
             self._send_json(200, {
                 "symbol": target_symbol,
                 "candles": candles,
                 "current_candle": current_candle,
                 "latest_price": latest_price,
+                "issue_price": issue_price,
             })
             return
 

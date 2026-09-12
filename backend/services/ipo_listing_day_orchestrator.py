@@ -218,8 +218,12 @@ class IPOListingDayOrchestrator:
             if self.engine is not None:
                 self.engine.pipelines[raw_symbol] = pipeline
                 self.engine.ipos_decisions[raw_symbol] = 0
+                if self.is_running and not self.engine.running:
+                    self.engine.start()
             else:
                 self.prepare_session([ipo])
+                if self.is_running:
+                    self.start(self.ws_source)
 
         # Track in registered_ipos if not already present
         clean_ipo = dict(ipo)

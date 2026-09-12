@@ -77,6 +77,19 @@ def test_ipo_historical_backtest_runner():
         "symbol": "HORIZONIND",
     }
 
+    from backend.storage.database import get_connection
+    _conn = get_connection()
+    try:
+        _conn.execute(
+            """
+            INSERT OR REPLACE INTO ipos (id, symbol, company_name, listing_date, issue_price, source, collected_at)
+            VALUES (201, 'HORIZONIND', 'Horizon Industrial Parks Ltd.', '2026-08-24', 500.0, 'test', '2026-08-24T10:00:00')
+            """
+        )
+        _conn.commit()
+    finally:
+        _conn.close()
+
     horizon_result = runner.run_one(
         screening=horizon_screening,
     )
