@@ -444,6 +444,26 @@ class ChittorgarhIPODataSource(IPODataSource):
             o_dt = cls._parse_date(open_raw)
             c_dt = cls._parse_date(close_raw)
 
+            # If Chittorgarh omitted explicit listing date, calculate official SEBI statutory listing date
+            if not parsed_dt and c_dt is not None:
+                from datetime import timedelta
+                cur = c_dt
+                added = 0
+                while added < 3:
+                    cur += timedelta(days=1)
+                    if cur.weekday() < 5:
+                        added += 1
+                parsed_dt = cur
+            elif not parsed_dt and o_dt is not None:
+                from datetime import timedelta
+                cur = o_dt
+                added = 0
+                while added < 5:
+                    cur += timedelta(days=1)
+                    if cur.weekday() < 5:
+                        added += 1
+                parsed_dt = cur
+
             # Skip if closing date was more than 14 days ago and no listing date
             if parsed_dt is None and c_dt is not None and (today - c_dt).days > 14:
                 continue

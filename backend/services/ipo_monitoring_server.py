@@ -38,7 +38,11 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                        COALESCE(i.issue_price, 'TBD') as issue_price,
                        COALESCE(i.symbol, '') as symbol
                 FROM ipo_screening_runs r
-                LEFT JOIN ipo_discoveries d ON r.chittorgarh_ipo_id = d.chittorgarh_ipo_id
+                LEFT JOIN ipo_discoveries d ON (
+                    r.chittorgarh_ipo_id = d.chittorgarh_ipo_id
+                    OR lower(replace(replace(r.company_name, ' Ltd.', ''), ' Limited', '')) =
+                       lower(replace(replace(d.company_name, ' Ltd.', ''), ' Limited', ''))
+                )
                 LEFT JOIN ipos i ON (
                     lower(replace(replace(r.company_name, ' Ltd.', ''), ' Limited', '')) =
                     lower(replace(replace(i.company_name, ' Ltd.', ''), ' Limited', ''))
@@ -80,10 +84,28 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                         pass
                 return None
 
-            def _resolve_listing_date(raw_listing: str | None, close_date: str | None) -> tuple[str, date | None]:
+            def _resolve_listing_date(raw_listing: str | None, close_date: str | None, open_date: str | None = None) -> tuple[str, date | None]:
                 parsed = _parse_d(raw_listing)
                 if parsed:
                     return (parsed.strftime("%d-%b-%Y"), parsed)
+                c_dt = _parse_d(close_date)
+                if c_dt:
+                    cur = c_dt
+                    added = 0
+                    while added < 3:
+                        cur += timedelta(days=1)
+                        if cur.weekday() < 5:  # Skip Saturday & Sunday
+                            added += 1
+                    return (cur.strftime("%d-%b-%Y"), cur)
+                o_dt = _parse_d(open_date)
+                if o_dt:
+                    cur = o_dt
+                    added = 0
+                    while added < 5:
+                        cur += timedelta(days=1)
+                        if cur.weekday() < 5:
+                            added += 1
+                    return (cur.strftime("%d-%b-%Y"), cur)
                 return ("TBD", None)
 
             def _get_ipo_state(open_date_str: str | None, close_date_str: str | None, listing_dt: date | None) -> tuple[str, str]:
@@ -108,7 +130,7 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                     continue
                 seen_companies.add(c_norm)
 
-                display_date, dt = _resolve_listing_date(run["listing_date"], run["ipo_close_date"])
+                display_date, dt = _resolve_listing_date(run["listing_date"], run["ipo_close_date"], run["ipo_open_date"])
                 # STRICT USER REQUIREMENT: There is no need of already listed IPOs!
                 if dt is not None and dt < today:
                     continue
