@@ -1064,6 +1064,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <script>
     let pollInterval = null;
+    let chartPollInterval = null;
     let globalData = { status: {}, report: {}, ipos: {}, matrix: [] };
 
     function showToast(msg) {
@@ -1655,9 +1656,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('chart-symbol-select').value = sym;
       switchTab('chart');
     }
-
-    let pollInterval = null;
-    let chartPollInterval = null;
 
     // Dynamic Candlestick Chart Rendering
     async function renderChart() {
