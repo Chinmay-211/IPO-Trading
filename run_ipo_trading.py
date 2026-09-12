@@ -75,6 +75,8 @@ def main():
     parser.add_argument("--port", type=int, default=default_port, help=f"Monitoring dashboard port (default: {default_port})")
     parser.add_argument("--username", default=os.getenv("AUTH_USERNAME", "Anish_5337"), help="Basic auth username (default: Anish_5337)")
     parser.add_argument("--password", default=os.getenv("AUTH_PASSWORD", "Anish_9482"), help="Basic auth password (default: Anish_9482)")
+    parser.add_argument("--ssl-cert", default=os.getenv("SSL_CERTFILE"), help="Path to SSL certificate file (.crt / .pem) for HTTPS")
+    parser.add_argument("--ssl-key", default=os.getenv("SSL_KEYFILE"), help="Path to SSL private key file (.key) for HTTPS")
 
     args = parser.parse_args()
 
@@ -123,9 +125,12 @@ def main():
         port=args.port,
         auth_username=args.username,
         auth_password=args.password,
+        ssl_certfile=args.ssl_cert,
+        ssl_keyfile=args.ssl_key,
     )
     monitoring_server.start()
-    dashboard_url = f"http://{args.host}:{monitoring_server.port}"
+    scheme = "https" if monitoring_server.is_ssl else "http"
+    dashboard_url = f"{scheme}://{args.host}:{monitoring_server.port}"
     logger.info(f"Real-Time Monitoring Dashboard live at: {dashboard_url}")
     print(f"\n>>> Live Dashboard running at: {dashboard_url}")
     print(f">>> Authorization required: Username: {args.username} | Password: {args.password} (Press Ctrl+C to stop)\n")

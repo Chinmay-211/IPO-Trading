@@ -10,6 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from backend.services.ipo_security import (
+    MAX_PAYLOAD_BYTES,
+    SecurityRateLimiter,
+    get_client_ip,
+    get_security_headers,
+    sanitize_symbol,
+)
+
 DEFAULT_AUTH_USERNAME = os.getenv("AUTH_USERNAME", "Anish_5337")
 DEFAULT_AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "Anish_9482")
 
@@ -553,6 +561,186 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       display: none;
       box-shadow: 0 10px 25px rgba(0,0,0,0.6);
       z-index: 1000;
+    }
+
+    /* Responsive Mobile Media Queries */
+    @media (max-width: 900px) {
+      body { padding: 12px 14px 30px; }
+      header { padding: 12px 14px; gap: 12px; }
+      .metrics-grid { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+      .pipeline-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    }
+
+    @media (max-width: 680px) {
+      body { padding: 8px 10px 30px; }
+
+      header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+        padding: 12px 14px;
+      }
+
+      .brand {
+        flex-direction: row;
+        align-items: flex-start;
+      }
+
+      h1 {
+        font-size: 15px;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .header-right {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        width: 100%;
+      }
+
+      .header-right .live-pill,
+      .header-right .clock-pill {
+        grid-column: span 1;
+        justify-content: center;
+        font-size: 11px;
+        padding: 6px 8px;
+      }
+
+      .header-right .btn,
+      .header-right select {
+        width: 100%;
+        text-align: center;
+        padding: 7px 8px;
+        font-size: 11px;
+      }
+
+      .pipeline-bar {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        justify-content: flex-start;
+        padding: 8px 10px;
+      }
+      .pipe-step { flex-shrink: 0; font-size: 10px; }
+      .pipe-num { width: 18px; height: 18px; font-size: 10px; }
+
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+
+      .metric-card {
+        padding: 10px 12px;
+      }
+
+      .metric-label {
+        font-size: 10px;
+      }
+
+      .metric-value {
+        font-size: 17px;
+      }
+
+      .nav-tabs {
+        -webkit-overflow-scrolling: touch;
+        gap: 4px;
+        padding-bottom: 6px;
+      }
+
+      .tab-btn {
+        padding: 7px 12px;
+        font-size: 11px;
+        flex-shrink: 0;
+      }
+
+      .chart-box {
+        padding: 12px;
+        border-radius: 10px;
+      }
+
+      .chart-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+      }
+
+      .chart-header > div:first-child {
+        flex-direction: column;
+        align-items: stretch !important;
+        gap: 8px !important;
+      }
+
+      .chart-header select {
+        width: 100% !important;
+      }
+
+      .chart-legend {
+        font-size: 11px;
+        gap: 8px;
+      }
+
+      canvas {
+        height: 260px;
+      }
+
+      .ipo-cards-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      .ipo-card {
+        padding: 12px;
+      }
+
+      .table-container {
+        border-radius: 8px;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      th {
+        padding: 8px 10px;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      td {
+        padding: 9px 10px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .terminal-box {
+        height: 280px;
+        padding: 10px;
+        font-size: 11px;
+      }
+
+      .log-line {
+        flex-direction: column;
+        gap: 2px;
+        padding-bottom: 6px;
+      }
+
+      .log-time {
+        font-size: 10px;
+        min-width: auto;
+      }
+
+      .sim-card {
+        padding: 14px;
+      }
+
+      .form-row {
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      #toast {
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        text-align: center;
+      }
     }
   </style>
 </head>
@@ -1555,6 +1743,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     });
 
+    // Resize listener for responsive chart on mobile/tablet orientation change
+    window.addEventListener('resize', () => {
+      if (document.getElementById('tab-chart') && document.getElementById('tab-chart').classList.contains('active')) {
+        renderChart();
+      }
+    });
+
     // Check credentials on load
     if (!getAuthHeader()) {
       showAuthModal();
@@ -1572,63 +1767,114 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 class IPOMonitoringHandler(BaseHTTPRequestHandler):
     """
-    Authenticated HTTP request handler enforcing HTTP Basic Authorization.
-    Restricted to authorized credentials (default: Anish_5337 / Anish_9482).
+    Authenticated HTTP request handler enforcing HTTP Basic Authorization,
+    production security headers, IP rate limiting, and brute-force protection.
     """
 
     def log_message(self, format: str, *args: Any) -> None:
         """Quiet server logging."""
         return
 
+    def _client_ip(self) -> str:
+        return get_client_ip(self.headers, getattr(self, "client_address", None))
+
+    def _apply_security_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        allowed_origins = getattr(self.server, "allowed_origins", None)
+        is_ssl = getattr(self.server, "is_ssl", False)
+        for name, value in get_security_headers(is_ssl=is_ssl, origin=origin, allowed_origins=allowed_origins):
+            self.send_header(name, value)
+
+    def _check_security_gates(self) -> bool:
+        """Enforce rate limits and temporary IP lockouts before handling any request."""
+        ip = self._client_ip()
+        rate_limiter: SecurityRateLimiter | None = getattr(self.server, "rate_limiter", None)
+        if rate_limiter is not None:
+            locked, cooldown = rate_limiter.is_locked_out(ip)
+            if locked:
+                self._send_rate_limited(cooldown)
+                return False
+            if not rate_limiter.check_rate_limit(ip):
+                self._send_rate_limited(60)
+                return False
+        return True
+
     def _is_authenticated(self) -> bool:
+        ip = self._client_ip()
+        rate_limiter: SecurityRateLimiter | None = getattr(self.server, "rate_limiter", None)
         expected_user = getattr(self.server, "auth_username", DEFAULT_AUTH_USERNAME)
         expected_pass = getattr(self.server, "auth_password", DEFAULT_AUTH_PASSWORD)
 
         auth_header = self.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Basic "):
+            if rate_limiter is not None:
+                rate_limiter.record_auth_failure(ip)
             return False
 
         try:
             encoded_cred = auth_header.split(" ", 1)[1].strip()
             decoded = base64.b64decode(encoded_cred).decode("utf-8")
             if ":" not in decoded:
+                if rate_limiter is not None:
+                    rate_limiter.record_auth_failure(ip)
                 return False
             username, password = decoded.split(":", 1)
-            return hmac.compare_digest(username, expected_user) and hmac.compare_digest(password, expected_pass)
+            valid = hmac.compare_digest(username, expected_user) and hmac.compare_digest(password, expected_pass)
+            if rate_limiter is not None:
+                if valid:
+                    rate_limiter.record_auth_success(ip)
+                else:
+                    rate_limiter.record_auth_failure(ip)
+            return valid
         except Exception:
+            if rate_limiter is not None:
+                rate_limiter.record_auth_failure(ip)
             return False
 
-    def _send_unauthorized(self) -> None:
-        body = json.dumps({"error": "Unauthorized. Valid credentials required."}).encode("utf-8")
+    def _send_unauthorized(self, message: str = "Unauthorized. Valid credentials required.") -> None:
+        body = json.dumps({"error": message}).encode("utf-8")
         self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="IPO Trading Terminal"')
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self._send_cors_headers()
+        self._apply_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+    def _send_rate_limited(self, retry_after: int) -> None:
+        body = json.dumps({
+            "error": "Too Many Requests. IP address temporarily throttled.",
+            "retry_after_seconds": retry_after,
+        }).encode("utf-8")
+        self.send_response(429)
+        self.send_header("Retry-After", str(retry_after))
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self._apply_security_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_json(self, status_code: int, data: Any) -> None:
         serialized = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(serialized)))
-        self._send_cors_headers()
+        self._apply_security_headers()
         self.end_headers()
         self.wfile.write(serialized)
 
     def do_OPTIONS(self) -> None:
-        """Handle CORS pre-flight without requiring authorization."""
+        """Handle CORS pre-flight with strict security headers."""
+        if not self._check_security_gates():
+            return
         self.send_response(204)
-        self._send_cors_headers()
+        self._apply_security_headers()
         self.end_headers()
 
     def do_GET(self) -> None:
+        if not self._check_security_gates():
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
         orchestrator = getattr(self.server, "orchestrator", None)
@@ -1638,7 +1884,7 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self._send_cors_headers()
+            self._apply_security_headers()
             self.end_headers()
             self.wfile.write(body)
             return
@@ -1781,6 +2027,9 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": f"Path '{path}' not found."})
 
     def do_POST(self) -> None:
+        if not self._check_security_gates():
+            return
+
         if not self._is_authenticated():
             self._send_unauthorized()
             return
@@ -1794,6 +2043,10 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             return
 
         content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > MAX_PAYLOAD_BYTES:
+            self._send_json(413, {"error": f"Payload Too Large. Max allowed size is {MAX_PAYLOAD_BYTES // 1024}KB."})
+            return
+
         body_data = {}
         if content_length > 0:
             try:
@@ -1803,9 +2056,13 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                 body_data = {}
 
         if path == "/api/tick":
-            symbol = str(body_data.get("symbol", "")).strip().upper()
-            price = float(body_data.get("price", 0.0))
-            volume = int(body_data.get("volume", 100))
+            symbol = sanitize_symbol(body_data.get("symbol", ""))
+            try:
+                price = float(body_data.get("price", 0.0))
+                volume = int(body_data.get("volume", 100))
+            except (ValueError, TypeError):
+                self._send_json(400, {"error": "Invalid numerical values for price or volume."})
+                return
 
             if not symbol or price <= 0:
                 self._send_json(400, {"error": "Valid 'symbol' and positive 'price' are required."})
@@ -1854,9 +2111,12 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
 
         if path in ("/api/ipos/select", "/api/select_ipo"):
             action = str(body_data.get("action", "select")).strip().lower()
-            sym = str(body_data.get("symbol", "")).strip().upper()
-            c_name = str(body_data.get("company_name", "")).strip()
-            issue_p = body_data.get("issue_price", 100.0)
+            sym = sanitize_symbol(body_data.get("symbol", ""))
+            c_name = str(body_data.get("company_name", "")).strip()[:100]
+            try:
+                issue_p = float(body_data.get("issue_price", 100.0))
+            except (ValueError, TypeError):
+                issue_p = 100.0
 
             if action == "deselect":
                 if not sym:
@@ -1913,8 +2173,8 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
 
 class IPOMonitoringServer:
     """
-    Lightweight real-time monitoring web server for IPO trading.
-    Protected by HTTP Basic Authorization.
+    Lightweight, production-hardened real-time monitoring web server for IPO trading.
+    Enforces HTTP Basic Authorization, brute-force IP throttling, security headers, and optional SSL/TLS.
     """
 
     def __init__(
@@ -1924,12 +2184,21 @@ class IPOMonitoringServer:
         port: int = 5050,
         auth_username: str | None = None,
         auth_password: str | None = None,
+        ssl_certfile: str | None = None,
+        ssl_keyfile: str | None = None,
+        allowed_origins: list[str] | None = None,
+        rate_limit_rpm: int = 120,
     ):
         self.orchestrator = orchestrator
         self.host = host
         self.port = port
         self.auth_username = auth_username if auth_username is not None else DEFAULT_AUTH_USERNAME
         self.auth_password = auth_password if auth_password is not None else DEFAULT_AUTH_PASSWORD
+        self.ssl_certfile = ssl_certfile or os.getenv("SSL_CERTFILE")
+        self.ssl_keyfile = ssl_keyfile or os.getenv("SSL_KEYFILE")
+        self.allowed_origins = allowed_origins
+        self.rate_limiter = SecurityRateLimiter(max_rpm=rate_limit_rpm)
+        self.is_ssl = False
         self.httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.activity_logs: list[dict[str, Any]] = [
@@ -1960,7 +2229,7 @@ class IPOMonitoringServer:
         ]
 
     def start(self) -> None:
-        """Start HTTP server in a background daemon thread with automatic port fallback."""
+        """Start HTTP server in a background daemon thread with automatic port fallback and SSL/TLS wrapping."""
         if self.httpd is not None:
             return
 
@@ -1979,10 +2248,27 @@ class IPOMonitoringServer:
         if self.httpd is None:
             raise OSError(f"Could not bind to any port near {bind_port}.")
 
+        # Wrap in TLS if certificate and key exist
+        if self.ssl_certfile and self.ssl_keyfile:
+            if os.path.exists(self.ssl_certfile) and os.path.exists(self.ssl_keyfile):
+                import ssl
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(certfile=self.ssl_certfile, keyfile=self.ssl_keyfile)
+                self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+                self.is_ssl = True
+                self.log_activity("INFO", "SECURITY", "TLS/HTTPS active. Public communication encrypted via SSL certificate.")
+
+        # Warn if default credentials are used in exposed / public host binding
+        if self.host not in ("127.0.0.1", "localhost") and (self.auth_username == "Anish_5337" and self.auth_password == "Anish_9482"):
+            self.log_activity("WARNING", "SECURITY", "CRITICAL NOTICE: Server exposed on network with default credentials! Set custom AUTH_USERNAME and AUTH_PASSWORD in .env.")
+
         self.httpd.orchestrator = self.orchestrator  # type: ignore[attr-defined]
         self.httpd.activity_logs = self.activity_logs  # type: ignore[attr-defined]
         self.httpd.auth_username = self.auth_username  # type: ignore[attr-defined]
         self.httpd.auth_password = self.auth_password  # type: ignore[attr-defined]
+        self.httpd.is_ssl = self.is_ssl  # type: ignore[attr-defined]
+        self.httpd.rate_limiter = self.rate_limiter  # type: ignore[attr-defined]
+        self.httpd.allowed_origins = self.allowed_origins  # type: ignore[attr-defined]
 
         self._thread = threading.Thread(
             target=self.httpd.serve_forever,
