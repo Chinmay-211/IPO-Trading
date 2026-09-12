@@ -57,6 +57,26 @@ def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
         conn.close()
 
 
+def get_next_scheduled_ipo(from_date: str | None = None) -> dict | None:
+    """Find the next scheduled Mainboard IPO strictly after from_date."""
+    d_str = from_date or date.today().strftime("%Y-%m-%d")
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT symbol, company_name, listing_date, issue_price
+            FROM ipos
+            WHERE listing_date > ? AND symbol IS NOT NULL AND trim(symbol) != ''
+            ORDER BY listing_date ASC, id ASC
+            LIMIT 1
+            """,
+            (d_str,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def ensure_live_ipos_discovered(logger) -> None:
     """Ensure database has real Mainboard IPOs and 13-rule screening runs from Chittorgarh."""
     conn = get_connection()
@@ -151,17 +171,43 @@ def main():
     ensure_live_ipos_discovered(logger)
 
     # Resolve Candidate IPOs (Real Indian Mainboard candidates)
+    target_dt = args.date or date.today().strftime("%Y-%m-%d")
     candidates: list[dict] = []
     if args.symbols:
         candidates = [{"symbol": sym.strip().upper()} for sym in args.symbols]
+        logger.info(f"Targeting manually specified symbols ({len(candidates)}): {[c['symbol'] for c in candidates]}")
     elif env_symbols:
         candidates = [{"symbol": sym.strip().upper()} for sym in env_symbols]
+        logger.info(f"Targeting symbols configured via SYMBOLS env ({len(candidates)}): {[c['symbol'] for c in candidates]}")
     else:
-        candidates = get_candidate_ipos(args.date)
+        candidates = get_candidate_ipos(target_dt)
         if not candidates:
-            logger.info("No candidate IPOs ready in database. Running in standby monitoring mode.")
+            today_weekday = date.today().weekday()
+            is_weekend = (today_weekday >= 5) and (not args.date)
+            next_ipo = get_next_scheduled_ipo(target_dt)
+            next_msg = (
+                f"Next scheduled Mainboard listing on NSE: {next_ipo['company_name']} ({next_ipo['symbol']}) on {next_ipo['listing_date']}"
+                f"{' (Issue Price: Rs.' + str(next_ipo['issue_price']) + ')' if next_ipo.get('issue_price') else ''}."
+                if next_ipo
+                else "No upcoming Mainboard listings found in registry."
+            )
+            if is_weekend:
+                logger.info(
+                    f"Market is CLOSED today (Weekend: {'Saturday' if today_weekday == 5 else 'Sunday'}, {target_dt}). "
+                    f"Zero Mainboard IPOs scheduled to list today."
+                )
+            else:
+                logger.info(
+                    f"Zero Mainboard IPOs scheduled to list on NSE/BSE today ({target_dt}). "
+                    f"Continuous equity trading is active for existing securities."
+                )
+            logger.info(f"{next_msg}")
+            logger.info("Running in standby monitoring mode. Select any IPO from the 13-Rule Matrix tab or pass --symbols to target early.")
 
-    logger.info(f"Prepared {len(candidates)} candidate IPO(s): {[c['symbol'] for c in candidates]}")
+    if candidates:
+        logger.info(f"Prepared {len(candidates)} candidate IPO(s): {[c['symbol'] for c in candidates]}")
+    else:
+        logger.info("Prepared 0 candidate IPO(s) for listing today.")
 
     # Initialize Risk Manager & Orchestrator
     risk_mgr = IPORiskManager(
@@ -175,7 +221,10 @@ def main():
         risk_manager=risk_mgr,
     )
     prepared_symbols = orchestrator.prepare_session(candidates)
-    logger.info(f"Session prepared for: {prepared_symbols}")
+    if prepared_symbols:
+        logger.info(f"Session prepared for: {prepared_symbols}")
+    else:
+        logger.info("Session prepared with 0 active candidate IPOs (Standby mode).")
 
     # Resolve SSL / TLS configuration for HTTPS
     ssl_cert = args.ssl_cert
@@ -209,6 +258,17 @@ def main():
     logger.info(f"Real-Time Monitoring Dashboard live at: {dashboard_url}")
     print(f"\n>>> Live Dashboard running at: {dashboard_url}")
     print(">>> Authorization required: Enter configured AUTH_USERNAME and AUTH_PASSWORD (Press Ctrl+C to stop)\n")
+
+    if not candidates:
+        today_weekday = date.today().weekday()
+        is_weekend = (today_weekday >= 5) and (not args.date)
+        next_ipo = get_next_scheduled_ipo(target_dt)
+        next_info = f" Next listing: {next_ipo['company_name']} ({next_ipo['symbol']}) on {next_ipo['listing_date']}." if next_ipo else ""
+        monitoring_server.log_activity(
+            "INFO",
+            "MARKET",
+            f"{'Market Closed Today (Weekend).' if is_weekend else '0 IPOs listing today.'}{next_info} Standby mode active.",
+        )
 
     # Auto-seed live real IPO discoveries if database is fresh/empty
     def _auto_discover_worker():
@@ -282,10 +342,13 @@ def main():
             ws_source = AngelOneWebSocketSource(on_tick=orchestrator.process_tick)
             ws_source.authenticate()
             tokens = list(orchestrator.token_to_symbol.keys())
-            if not tokens:
-                logger.warning(f"No NSE tokens resolved for candidates: {prepared_symbols}. Verify symbols exist in Angel One instrument list.")
+            if not prepared_symbols:
+                logger.info("0 candidate IPOs listing today. Zero NSE tokens required for listing-day subscription. Angel One WebSocket connected in standby mode.")
+            elif not tokens:
+                logger.warning(f"Could not resolve NSE instrument tokens for candidate symbols: {prepared_symbols} from Angel One master instruments.")
             else:
                 ws_source.subscribe_nse(tokens)
+                logger.info(f"Angel One SmartWebSocketV2 subscribed to NSE tokens: {tokens} for candidates: {prepared_symbols}")
             ws_thread = threading.Thread(target=ws_source.connect, name="AngelOneWSThread", daemon=True)
             ws_thread.start()
             orchestrator.ws_source = ws_source

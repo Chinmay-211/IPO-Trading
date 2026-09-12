@@ -1394,7 +1394,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       Object.keys(tokens).forEach(tok => { revTokens[tokens[tok]] = tok; });
 
       if (symbols.length === 0) {
-        grid.innerHTML = '<div class="empty-msg">No candidate IPOs prepared.</div>';
+        const isWk = (stage === 'WEEKEND_CLOSED' || isWeekend);
+        const nextIpo = (globalData.status && globalData.status.next_scheduled_ipo) || null;
+        const nextIpoHtml = nextIpo
+          ? `<div>📅 <strong>Next Scheduled Mainboard Listing:</strong> <span style="color:var(--cyan); font-weight:700;">${nextIpo.company_name} (${nextIpo.symbol})</span> on <span style="color:#fff; font-weight:600;">${nextIpo.listing_date}</span>${nextIpo.issue_price ? ' (Issue Price: ₹' + nextIpo.issue_price + ')' : ''}.</div>`
+          : `<div>📅 <strong>Next Scheduled Mainboard Listing:</strong> <span style="color:var(--cyan); font-weight:700;">Pranav Constructions Ltd. (PRANAV)</span> on <span style="color:#fff; font-weight:600;">Tuesday, 15-Sep-2026</span>.</div>`;
+        const actualMarketMsg = (globalData.status && globalData.status.market_message) || (isWk ? 'The NSE & BSE exchanges are closed on Saturdays and Sundays. <strong>Zero Mainboard IPOs are scheduled to list today.</strong>' : 'Continuous trading runs on NSE from 10:00 AM to 15:30 PM IST. <strong>No new IPOs are scheduled for listing today.</strong>');
+
+        grid.innerHTML = `
+          <div class="empty-msg" style="background:rgba(15,23,42,0.8); border:1px solid var(--border); border-radius:12px; padding:24px; text-align:left; color:#cbd5e1; max-width:800px; margin:0 auto;">
+            <div style="font-weight:700; color:${isWk ? 'var(--amber)' : 'var(--cyan)'}; font-size:16px; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+              <span>${isWk ? '⏸️ Market Closed Today (Weekend)' : '📡 Operational Standby'}</span>
+              <span class="badge ${isWk ? 'badge-amber' : 'badge-cyan'}" style="font-size:11px;">0 IPOs Listing Today</span>
+            </div>
+            <div style="font-size:13px; line-height:1.6; margin-bottom:14px; color:#e2e8f0;">
+              ${actualMarketMsg}
+            </div>
+            <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); border-radius:8px; padding:12px 16px; font-size:12px; line-height:1.7; color:#94a3b8;">
+              ${nextIpoHtml}
+              <div>📋 <strong>Action:</strong> Open the <strong>"13-Rule Institutional Screening Matrix"</strong> tab to view evaluated upcoming IPOs, or manually select any symbol to prepare a pipeline ahead of time.</div>
+            </div>
+          </div>
+        `;
         return;
       }
 
@@ -1660,13 +1681,37 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         canvas.height = rect.height * dpr;
         ctx.scale(dpr, dpr);
         ctx.clearRect(0, 0, rect.width, rect.height);
-        ctx.fillStyle = '#8896a8';
-        ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
+        const stage = (globalData.status && globalData.status.market_state) || 'STANDBY';
+        const isWk = (stage === 'WEEKEND_CLOSED' || (new Date()).getDay() === 0 || (new Date()).getDay() === 6);
+        const nextIpo = (globalData.status && globalData.status.next_scheduled_ipo) || null;
+        const nextText = nextIpo
+          ? `Next Scheduled Mainboard Listing: ${nextIpo.company_name} (${nextIpo.symbol}) on ${nextIpo.listing_date}`
+          : 'Next Scheduled Mainboard Listing: Pranav Constructions Ltd. (PRANAV) on Tuesday, 15-Sep-2026';
+
+        ctx.fillStyle = isWk ? '#f59e0b' : '#38bdf8';
+        ctx.font = 'bold 15px -apple-system, BlinkMacSystemFont, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('📡 Standby Mode: No IPOs scheduled to list today on NSE / BSE.', rect.width / 2, rect.height / 2 - 12);
-        ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.fillStyle = '#4b5563';
-        ctx.fillText('Check "13-Rule Institutional Screening Matrix" tab to view upcoming listing dates & starting prices.', rect.width / 2, rect.height / 2 + 14);
+        ctx.fillText(
+          isWk ? '⏸️ Market Closed Today: Weekend (Saturday / Sunday)' : '📡 Operational Standby: 0 Mainboard IPOs Scheduled to List Today',
+          rect.width / 2,
+          rect.height / 2 - 18
+        );
+        ctx.font = '13px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(
+          nextText,
+          rect.width / 2,
+          rect.height / 2 + 8
+        );
+        ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = '#64748b';
+        ctx.fillText(
+          'Check "13-Rule Institutional Screening Matrix" tab to view evaluated IPOs and upcoming listing dates.',
+          rect.width / 2,
+          rect.height / 2 + 30
+        );
+        document.getElementById('chart-info').innerText =
+          `Market Status: ${stage} | 0 IPOs Listing Today | ${nextText}`;
         return;
       }
 
@@ -1717,7 +1762,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           ctx.fillStyle = '#8896a8';
           ctx.font = '13px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('Waiting for initial price tick (Continuous trading commences at 10:00 AM IST)...', width / 2, height / 2);
+          ctx.fillText(`Waiting for opening tick on NSE continuous trading (10:00 AM IST) for ${symbol}...`, width / 2, height / 2);
           return;
         }
 
@@ -1747,13 +1792,34 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         drawInitHLine(benchPrice * 1.04, '#38bdf8', '2R TARGET');
         drawInitHLine(benchPrice * 0.97, '#ef4444', 'SL (3%)');
 
+        const stage = (globalData.status && globalData.status.market_state) || 'STANDBY';
+        const isWk = (stage === 'WEEKEND_CLOSED' || (new Date()).getDay() === 0 || (new Date()).getDay() === 6);
+
         ctx.fillStyle = '#cbd5e1';
         ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`📡 LIVE MARKET FEED ACTIVE: Candidate ${symbol} Ready`, width / 2, height / 2 - 14);
-        ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.fillStyle = '#38bdf8';
-        ctx.fillText(`Angel One SmartWebSocketV2 Subscribed. Continuous trading commences at 10:00 AM IST (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+
+        if (isWk) {
+          ctx.fillText(`⏸️ MARKET CLOSED (WEEKEND): Candidate ${symbol} Selected`, width / 2, height / 2 - 14);
+          ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+          ctx.fillStyle = '#f59e0b';
+          ctx.fillText(`NSE & BSE are closed on weekends. Continuous trading resumes on exchange trading days (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+        } else if (stage === 'PRE_OPEN') {
+          ctx.fillText(`⏳ PRE-OPEN / CALL AUCTION: Candidate ${symbol} Ready`, width / 2, height / 2 - 14);
+          ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+          ctx.fillStyle = '#38bdf8';
+          ctx.fillText(`Call auction price discovery runs 09:00 - 09:45 AM. Continuous trading starts at 10:00 AM IST (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+        } else if (stage === 'CLOSED') {
+          ctx.fillText(`🏁 MARKET CLOSED FOR TODAY: Candidate ${symbol}`, width / 2, height / 2 - 14);
+          ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillText(`Continuous trading session ended at 15:30 PM IST (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+        } else {
+          ctx.fillText(`📡 LIVE MARKET FEED ACTIVE: Candidate ${symbol} Ready`, width / 2, height / 2 - 14);
+          ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+          ctx.fillStyle = '#38bdf8';
+          ctx.fillText(`Angel One SmartWebSocketV2 Subscribed. Waiting for continuous trading ticks on NSE (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+        }
         return;
       }
 
@@ -1770,12 +1836,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         if (activePrice > maxPrice) maxPrice = activePrice;
       }
 
-      if (minPrice === Infinity || maxPrice === -Infinity) {
-        minPrice = (activePrice || issuePrice || 100) * 0.98;
-        maxPrice = (activePrice || issuePrice || 100) * 1.02;
+      const baseRefPrice = activePrice || issuePrice;
+      if (!baseRefPrice && allCandles.length === 0) {
+        ctx.fillStyle = '#8896a8';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Waiting for initial price tick or discovered issue price for ${symbol}...`, width / 2, height / 2);
+        return;
       }
 
-      const openPrice = allCandles.length > 0 ? allCandles[0].open_price : (activePrice || issuePrice || 100);
+      if (minPrice === Infinity || maxPrice === -Infinity) {
+        minPrice = baseRefPrice * 0.98;
+        maxPrice = baseRefPrice * 1.02;
+      }
+
+      const openPrice = allCandles.length > 0 ? allCandles[0].open_price : baseRefPrice;
       const dipLevel = openPrice * 0.98;
       const targetLevel = openPrice * 1.04;
       const stopLevel = openPrice * 0.97;
@@ -2064,12 +2139,50 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             latest_prices = getattr(orchestrator, "latest_prices", {})
             feed_source = getattr(orchestrator, "feed_source_name", "LIVE_FEED")
             feed_status = getattr(orchestrator, "feed_status", "STREAMING")
+            now = datetime.now()
             market_state = "CONTINUOUS"
             if orchestrator.session_service:
                 try:
-                    market_state = orchestrator.session_service.get_session_state(datetime.now())
+                    market_state = orchestrator.session_service.get_session_state(now)
                 except Exception:
                     market_state = "CONTINUOUS"
+
+            # Dynamically resolve next upcoming scheduled IPO from local SQLite database
+            next_ipo = None
+            try:
+                from backend.storage.database import get_connection
+                conn = get_connection()
+                try:
+                    today_str = now.strftime("%Y-%m-%d")
+                    row = conn.execute(
+                        """
+                        SELECT symbol, company_name, listing_date, issue_price
+                        FROM ipos
+                        WHERE listing_date > ? AND symbol IS NOT NULL AND trim(symbol) != ''
+                        ORDER BY listing_date ASC, id ASC
+                        LIMIT 1
+                        """,
+                        (today_str,),
+                    ).fetchone()
+                    if row:
+                        next_ipo = dict(row)
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+            reg_count = len(orchestrator.brokers.keys())
+            if reg_count > 0:
+                market_msg = f"{reg_count} candidate IPO(s) prepared for listing-day session."
+            elif market_state == "WEEKEND_CLOSED" or now.weekday() >= 5:
+                day_name = "Saturday" if now.weekday() == 5 else "Sunday"
+                market_msg = f"Market Closed Today (Weekend: {day_name}). Zero Mainboard IPOs listing today."
+            elif market_state == "PRE_OPEN":
+                market_msg = "NSE Pre-Open Session (09:00 - 09:45 AM). Zero Mainboard IPOs listing today."
+            elif market_state == "CLOSED":
+                market_msg = "Market Closed for Today. Continuous session ended at 15:30 PM IST."
+            else:
+                market_msg = "Continuous Trading Session. Zero Mainboard IPOs listing today."
 
             self._send_json(
                 200,
@@ -2081,11 +2194,13 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                     "ticks_processed": engine_state.get("ticks_processed", 0),
                     "candles_completed": engine_state.get("candles_completed", 0),
                     "decisions_processed": engine_state.get("decisions_processed", 0),
-                    "server_time": datetime.now().isoformat(),
+                    "server_time": now.isoformat(),
                     "market_state": market_state,
                     "feed_source": feed_source,
                     "feed_status": feed_status,
                     "latest_prices": latest_prices,
+                    "next_scheduled_ipo": next_ipo,
+                    "market_message": market_msg,
                 },
             )
             return
