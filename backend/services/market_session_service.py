@@ -135,6 +135,9 @@ class MarketSessionService:
             CLOSED
         """
 
+        if timestamp.weekday() >= 5:
+            return "WEEKEND_CLOSED"
+
         if self.is_before_market_open(
             timestamp
         ):

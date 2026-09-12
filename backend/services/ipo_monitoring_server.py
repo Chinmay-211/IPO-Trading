@@ -917,7 +917,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <!-- TAB 2: Selected IPOs -->
   <div id="tab-selected" class="tab-pane">
-    <h3 style="font-size:15px; margin-bottom:12px; color:#fff;">Candidate IPOs Selected for Today's Listing Session</h3>
+    <h3 id="selected-tab-heading" style="font-size:15px; margin-bottom:12px; color:#fff;">Candidate IPOs Prepared for Listing Session</h3>
     <div class="ipo-cards-grid" id="selected-ipos-grid">
       <div class="empty-msg">No candidate IPOs prepared.</div>
     </div>
@@ -1381,6 +1381,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     function renderIPOCards(symbols, ipos) {
       const grid = document.getElementById('selected-ipos-grid');
+      const heading = document.getElementById('selected-tab-heading');
+      const stage = globalData.status.market_state || 'CONTINUOUS';
+      const isWeekend = (new Date()).getDay() === 0 || (new Date()).getDay() === 6;
+
+      if (heading) {
+        heading.innerText = (stage === 'WEEKEND_CLOSED' || isWeekend)
+          ? "Upcoming IPO Candidates on Standby (Market Closed Today / Weekend)"
+          : (stage === 'CLOSED' ? "Candidate IPOs (Market Closed for Today)" : "Candidate IPOs Prepared for Listing Session");
+      }
+
       const registered = ipos.registered_ipos || [];
       const tokens = ipos.token_to_symbol || {};
       const latestPrices = (globalData.status && globalData.status.latest_prices) || {};
@@ -1400,7 +1410,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const ltpText = pInfo.price ? `₹${Number(pInfo.price).toFixed(2)}` : (ipoData.issue_price ? `₹${Number(ipoData.issue_price).toFixed(2)}` : 'TBD');
         const chg = pInfo.change_pct !== undefined ? `${pInfo.change_pct >= 0 ? '+' : ''}${pInfo.change_pct.toFixed(2)}%` : '+0.00%';
         const chgColor = (pInfo.change_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)';
-        const stage = globalData.status.market_state || 'CONTINUOUS';
+        const stageColor = (stage === 'WEEKEND_CLOSED' || stage === 'CLOSED') ? 'var(--amber)' : 'var(--green)';
 
         return `
           <div class="ipo-card ${isCurrent ? 'active-ipo' : ''}">
@@ -1414,7 +1424,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             <div class="ipo-stats-row">
               <div><div class="stat-title">Live LTP</div><div class="stat-val" style="color:${chgColor}">${ltpText} <span style="font-size:10px;">(${chg})</span></div></div>
               <div><div class="stat-title">Angel Token</div><div class="stat-val"><code>${token}</code></div></div>
-              <div><div class="stat-title">Session State</div><div class="stat-val" style="color:var(--green)">${stage}</div></div>
+              <div><div class="stat-title">Session State</div><div class="stat-val" style="color:${stageColor}">${stage}</div></div>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
               <span style="font-size:11px; color:var(--muted);">13-Rule Check: <strong>PASSED</strong></span>
