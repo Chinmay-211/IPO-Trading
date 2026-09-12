@@ -895,7 +895,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div id="m-candles" class="metric-value">0</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">Simulated Slippage</div>
+      <div class="metric-label">Execution Slippage</div>
       <div id="m-slippage" class="metric-value">0.05%</div>
     </div>
   </div>
@@ -906,7 +906,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="tab-btn" onclick="switchTab('selected')">🎯 Selected IPOs (<span id="tab-ipo-cnt">0</span>)</button>
     <button class="tab-btn" onclick="switchTab('matrix')">📋 13-Rule Institutional Screening Matrix</button>
     <button class="tab-btn" onclick="switchTab('backend')">🤖 What Backend is Doing (Live Event Feed)</button>
-    <button class="tab-btn" onclick="switchTab('simulator')">⚡ Interactive Simulator & Ticks</button>
     <button class="tab-btn" onclick="switchTab('orders')">📝 Orders & Positions</button>
   </div>
 
@@ -1018,34 +1017,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TAB 5: Interactive Simulator -->
-  <div id="tab-simulator" class="tab-pane">
-    <div class="sim-card">
-      <h3 style="font-size:15px; margin-bottom:12px; color:#fff;">Inject Test Tick (Zero-Auth Strategy Test)</h3>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Symbol</label>
-          <select id="sim-symbol" class="form-control"></select>
-        </div>
-        <div class="form-group">
-          <label>Price (₹)</label>
-          <input id="sim-price" type="number" step="0.05" class="form-control" value="100.0">
-        </div>
-        <div class="form-group">
-          <label>Volume</label>
-          <input id="sim-volume" type="number" class="form-control" value="100">
-        </div>
-      </div>
-      <div style="display:flex; gap:10px; flex-wrap:wrap;">
-        <button class="btn btn-primary" onclick="injectCustomTick()">⚡ Send Custom Tick</button>
-        <button class="btn" onclick="quickSimulateDip()">📉 Simulate 2.5% Dip Below Open</button>
-        <button class="btn" onclick="quickSimulateBreakout()">🚀 Simulate Breakout with 1.8x Volume</button>
-      </div>
-      <div id="sim-result" style="margin-top:14px; padding:12px; background:#070b10; border-radius:6px; font-family:monospace; font-size:12px; color:var(--cyan); display:none;"></div>
-    </div>
-  </div>
-
-  <!-- TAB 6: Orders & Positions -->
+  <!-- TAB 5: Orders & Positions -->
   <div id="tab-orders" class="tab-pane">
     <div class="chart-box">
       <h3 style="font-size:15px; margin-bottom:12px; color:#fff;">Active Paper Positions</h3>
@@ -1364,18 +1336,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('m-slippage').innerText = `${((report.slippage_pct || 0.0005) * 100).toFixed(2)}%`;
 
       const chartSelect = document.getElementById('chart-symbol-select');
-      const simSelect = document.getElementById('sim-symbol');
       const currChart = chartSelect.value;
-      const currSim = simSelect.value;
 
       if (symbols.length === 0) {
         chartSelect.innerHTML = '<option value="">(Standby - 0 IPOs listing today)</option>';
-        simSelect.innerHTML = '<option value="">(No IPOs today)</option>';
       } else {
         chartSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
-        simSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
         if (currChart && symbols.includes(currChart)) chartSelect.value = currChart;
-        if (currSim && symbols.includes(currSim)) simSelect.value = currSim;
       }
 
       // Render Selected IPO Cards
@@ -1820,42 +1787,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           }
         });
       }
-    }
-
-    async function injectCustomTick() {
-      const sym = document.getElementById('sim-symbol').value;
-      const price = parseFloat(document.getElementById('sim-price').value);
-      const volume = parseInt(document.getElementById('sim-volume').value, 10);
-
-      if (!sym || isNaN(price) || isNaN(volume)) {
-        showToast('Specify valid Symbol, Price, and Volume.');
-        return;
-      }
-
-      const res = await apiFetch('/api/tick', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: sym, price, volume })
-      }).then(r => r.json());
-
-      const resBox = document.getElementById('sim-result');
-      resBox.style.display = 'block';
-      resBox.innerText = `Tick processed: ₹${price} (Vol: ${volume}). Result: ${JSON.stringify(res.result || 'Ingested to candle')}`;
-      showToast(`Tick injected for ${sym} @ ₹${price}`);
-      fetchData();
-    }
-
-    async function quickSimulateDip() {
-      const sym = document.getElementById('sim-symbol').value;
-      document.getElementById('sim-price').value = '97.5';
-      await injectCustomTick();
-    }
-
-    async function quickSimulateBreakout() {
-      const sym = document.getElementById('sim-symbol').value;
-      document.getElementById('sim-price').value = '101.5';
-      document.getElementById('sim-volume').value = '1800';
-      await injectCustomTick();
     }
 
     async function triggerEODExit() {
