@@ -135,42 +135,54 @@ class IPOAnalysisBuilder:
         # SUBSCRIPTION
         # -----------------------------------------------------
 
-        self.add_subscription_details(
-            analysis=analysis,
-            chittorgarh_ipo_id=(
-                chittorgarh_ipo_id
-                if chittorgarh_ipo_id is not None
-                else ipo_id
-            ),
-            chittorgarh_url=chittorgarh_url,
-        )
+        try:
+            self.add_subscription_details(
+                analysis=analysis,
+                chittorgarh_ipo_id=(
+                    chittorgarh_ipo_id
+                    if chittorgarh_ipo_id is not None
+                    else ipo_id
+                ),
+                chittorgarh_url=chittorgarh_url,
+            )
+        except Exception:
+            pass
 
         # -----------------------------------------------------
         # ISSUE DETAILS
         # -----------------------------------------------------
 
-        self.add_issue_details(
-            analysis=analysis,
-            url=chittorgarh_url,
-        )
+        try:
+            self.add_issue_details(
+                analysis=analysis,
+                url=chittorgarh_url,
+            )
+        except Exception:
+            pass
 
         # -----------------------------------------------------
         # ANCHOR INVESTORS
         # -----------------------------------------------------
 
-        self.add_anchor_details(
-            analysis=analysis,
-            url=chittorgarh_url,
-        )
+        try:
+            self.add_anchor_details(
+                analysis=analysis,
+                url=chittorgarh_url,
+            )
+        except Exception:
+            pass
 
         # -----------------------------------------------------
         # FINANCIALS
         # -----------------------------------------------------
 
-        self.add_financial_details(
-            analysis=analysis,
-            url=chittorgarh_url,
-        )
+        try:
+            self.add_financial_details(
+                analysis=analysis,
+                url=chittorgarh_url,
+            )
+        except Exception:
+            pass
 
         return analysis
 

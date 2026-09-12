@@ -898,9 +898,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           </p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <select id="matrix-filter" class="btn" style="font-size:11px; padding:6px 10px; background:#16202e; border:1px solid var(--border); color:#fff;" onchange="filterMatrixView(this.value)">
+            <option value="all" selected>All Mainboard IPOs</option>
+            <option value="upcoming">Upcoming Only</option>
+          </select>
           <input type="text" id="custom-ipo-sym" class="btn" style="width:140px; text-align:left; background:#16202e; border:1px solid var(--border); padding:6px 10px; font-size:12px; color:#fff; text-transform:uppercase;" placeholder="NSE Symbol">
           <input type="number" id="custom-ipo-price" class="btn" style="width:90px; text-align:left; background:#16202e; border:1px solid var(--border); padding:6px 10px; font-size:12px; color:#fff;" placeholder="Price (₹)">
           <button class="btn btn-primary" onclick="addCustomIPO()" style="font-size:11px; padding:6px 12px; font-weight:700;">➕ Add to Trade</button>
+          <button class="btn btn-primary" onclick="triggerDiscovery()" id="btn-discover" style="font-size:11px; padding:6px 12px; font-weight:700; background:linear-gradient(135deg, #0284c7, #0369a1);" title="Fetch real Mainboard IPOs from Chittorgarh and evaluate 13 rules">🌐 Scan Live IPOs</button>
           <button class="btn" onclick="fetchMatrixData()" style="font-size:11px; padding:6px 10px;">🔄 Refresh</button>
         </div>
       </div>
@@ -1227,12 +1232,29 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
+    let matrixViewFilter = 'all';
+    function filterMatrixView(val) {
+      matrixViewFilter = val;
+      fetchMatrixData();
+    }
+
+    function deriveCleanSymbol(name) {
+      if (!name) return 'IPO';
+      const clean = name.replace(/\b(Ltd|Limited|India|Technologies|Services|Solutions|Industries|Holdings|Infra|Infrastructure|Enterprises|Corp|Corporation|Co|Company)\b/gi, '')
+                        .replace(/[^a-zA-Z0-9]/g, '')
+                        .toUpperCase();
+      return clean.slice(0, 10) || 'IPO';
+    }
+
     async function fetchMatrixData() {
       try {
-        const res = await apiFetch('/api/matrix').then(r => r.json());
-        globalData.matrix = res.matrix || [];
+        const query = matrixViewFilter === 'upcoming' ? '?upcoming=true' : (matrixViewFilter === 'all' ? '?upcoming=false' : '');
+        const res = await apiFetch('/api/matrix' + query).then(r => r.json());
+        globalData.matrix = Array.isArray(res) ? res : (res.matrix || []);
         renderMatrix();
-      } catch (e) {}
+      } catch (e) {
+        console.error('Failed to fetch matrix data', e);
+      }
     }
 
     async function fetchBackendActivity() {
@@ -1424,13 +1446,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
-    function deriveCleanSymbol(companyName) {
-      if (!companyName) return 'IPO';
-      const cleaned = companyName.replace(/\b(Ltd\.?|Limited|Pvt\.?|Private|India|Co\.?|Corporation)\b/gi, '').trim();
-      const words = cleaned.split(/\s+/).filter(Boolean);
-      let sym = words.length > 0 ? words[0].toUpperCase().replace(/[^A-Z0-9]/g, '') : 'IPO';
-      return sym || 'IPO';
-    }
 
     async function toggleSelectIPO(symbol, companyName, issuePrice, action) {
       let sym = symbol;
@@ -1485,18 +1500,51 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       showToast(`Added ${sym} to active trading session`);
     }
 
+    async function triggerDiscovery() {
+      showToast('Starting live IPO discovery from Chittorgarh...');
+      const btn = document.getElementById('btn-discover');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ Scanning...';
+      }
+      try {
+        const res = await apiFetch('/api/discover', { method: 'POST' }).then(r => r.json());
+        showToast(res.message || 'Scanning Chittorgarh & evaluating rules...');
+        let checks = 0;
+        const poller = setInterval(async () => {
+          checks++;
+          await fetchMatrixData();
+          await fetchBackendActivity();
+          if ((globalData.matrix && globalData.matrix.length > 0) || checks >= 20) {
+            clearInterval(poller);
+            if (btn) {
+              btn.disabled = false;
+              btn.innerText = '🌐 Scan Live IPOs';
+            }
+          }
+        }, 3000);
+      } catch (err) {
+        showToast('Discovery request failed: ' + (err.message || err));
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = '🌐 Scan Live IPOs';
+        }
+      }
+    }
+
     function renderMatrix() {
       const body = document.getElementById('matrix-body');
       const matrix = globalData.matrix;
       if (!matrix || matrix.length === 0) {
         body.innerHTML = `
           <tr>
-            <td colspan="12" style="text-align:center; padding:28px 16px; color:var(--muted); font-size:12px;">
-              <div style="font-size:22px; margin-bottom:6px;">📡</div>
-              <strong style="color:#fff;">No upcoming IPO discoveries in local SQLite database.</strong><br>
-              <span style="font-size:11px; display:inline-block; margin-top:4px;">
-                Enter any symbol above and click <strong>➕ Add to Trade</strong>, or configure <code>SYMBOLS</code> in your <code>.env</code> file.
-              </span>
+            <td colspan="12" style="text-align:center; padding:32px 16px; color:var(--muted); font-size:12px;">
+              <div style="font-size:26px; margin-bottom:8px;">📡</div>
+              <strong style="color:#fff; font-size:13px;">No upcoming IPO discoveries in local SQLite database.</strong><br>
+              <span style="font-size:11px; display:inline-block; margin-top:4px; margin-bottom:12px;">
+                Click below to fetch real live Mainboard IPOs from Chittorgarh & evaluate all 13 rules automatically:
+              </span><br>
+              <button class="btn btn-primary" onclick="triggerDiscovery()" style="font-size:12px; padding:8px 18px; font-weight:700; background:linear-gradient(135deg, #0284c7, #0369a1);">🌐 Scan & Screen Live Mainboard IPOs Now</button>
             </td>
           </tr>
         `;
@@ -1991,7 +2039,15 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/matrix":
-            matrix = get_recent_screening_matrix(limit=None, upcoming_only=True)
+            query_params = parse_qs(parsed.query)
+            upcoming_param = query_params.get("upcoming", [None])[0]
+            if upcoming_param is not None:
+                upcoming_flag = upcoming_param.lower() in ("true", "1", "yes")
+                matrix = get_recent_screening_matrix(limit=None, upcoming_only=upcoming_flag)
+            else:
+                matrix = get_recent_screening_matrix(limit=None, upcoming_only=True)
+                if not matrix:
+                    matrix = get_recent_screening_matrix(limit=None, upcoming_only=False)
             self._send_json(200, {"matrix": matrix})
             return
 
@@ -2213,6 +2269,47 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                 })
             except Exception as ex:
                 self._send_json(500, {"status": "ERROR", "message": str(ex)})
+        if path in ("/api/discover", "/api/sync_ipos"):
+            server_logs = getattr(self.server, "activity_logs", None)
+
+            def _run_discovery():
+                try:
+                    from backend.services.ipo_discovery_service import IPODiscoveryService
+                    from backend.services.ipo_screening_runner import IPOScreeningRunner
+                    if isinstance(server_logs, list):
+                        server_logs.append({
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "level": "INFO",
+                            "category": "DISCOVERY",
+                            "message": "Connecting to Chittorgarh to scan live Mainboard IPOs...",
+                        })
+                    res = IPODiscoveryService().run()
+                    if isinstance(server_logs, list):
+                        server_logs.append({
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "level": "INFO",
+                            "category": "DISCOVERY",
+                            "message": f"Chittorgarh scan finished: {res.get('fetched', 0)} fetched, {res.get('inserted', 0)} new discoveries.",
+                        })
+                    screened = IPOScreeningRunner().screen_all()
+                    if isinstance(server_logs, list):
+                        server_logs.append({
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "level": "INFO",
+                            "category": "SCREENING",
+                            "message": f"13-Rule Institutional Screening evaluated {len(screened)} real IPOs.",
+                        })
+                except Exception as ex:
+                    if isinstance(server_logs, list):
+                        server_logs.append({
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "level": "ERROR",
+                            "category": "DISCOVERY",
+                            "message": f"Discovery/Screening failed: {ex}",
+                        })
+
+            threading.Thread(target=_run_discovery, name="LiveIPODiscoveryWorker", daemon=True).start()
+            self._send_json(200, {"status": "STARTED", "message": "Live Chittorgarh discovery & screening initiated."})
             return
 
         self._send_json(404, {"error": f"POST '{path}' not supported."})

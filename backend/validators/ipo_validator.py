@@ -3,7 +3,7 @@ from datetime import date, datetime
 from backend.models.ipo import IPO
 
 
-def validate_ipo(ipo: IPO) -> list[str]:
+def validate_ipo(ipo: IPO, allow_future: bool = True) -> list[str]:
     """Return a list of validation errors for an IPO record."""
     errors = []
 
@@ -12,7 +12,7 @@ def validate_ipo(ipo: IPO) -> list[str]:
 
     if not ipo.listing_date:
         errors.append("listing_date is required")
-    elif ipo.listing_date > date.today():
+    elif not allow_future and ipo.listing_date > date.today():
         errors.append("listing_date cannot be in the future")
 
     if ipo.issue_price <= 0:

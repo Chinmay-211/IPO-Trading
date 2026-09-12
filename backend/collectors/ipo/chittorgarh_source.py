@@ -110,34 +110,47 @@ class ChittorgarhIPODataSource(IPODataSource):
             or self.MAINBOARD_LIST_URL
         )
 
-        response = self.session.get(
-            self._build_api_url(),
-            timeout=30,
-        )
-
-        response.raise_for_status()
+        today = date.today()
+        # Active timetable queries: current month/year, 2025, 2024
+        queries = [
+            (today.month, today.year, None),
+            (1, 2025, "2024-25"),
+            (9, 2024, "2024-25"),
+        ]
 
         records = []
-        page = 1
-        total_pages = 1
+        for m, y, fy in queries:
+            try:
+                page = 1
+                total_pages = 1
+                while page <= total_pages:
+                    api_url = self._build_api_url(page=page, month=m, year=y, financial_year=fy)
+                    response = self.session.get(api_url, timeout=15)
+                    if response.status_code != 200:
+                        break
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        break
+                    if not isinstance(payload, dict) or payload.get("msg") != 1 or not payload.get("reportTableData"):
+                        break
+                    parsed = self.parse(json.dumps(payload), target_url)
+                    records.extend(parsed)
+                    total_pages = int(payload.get("totalPages", 1))
+                    page += 1
+                if records:
+                    break
+            except Exception:
+                continue
 
-        while page <= total_pages:
-            if page > 1:
-                response = self.session.get(
-                    self._build_api_url(page=page),
-                    timeout=30,
-                )
-                response.raise_for_status()
-
-            payload = response.json()
-            records.extend(
-                self.parse(
-                    json.dumps(payload),
-                    target_url,
-                )
-            )
-            total_pages = int(payload.get("totalPages", page))
-            page += 1
+        # If API returned no records, fallback to fetching MAINBOARD_LIST_URL directly
+        if not records:
+            try:
+                resp = self.session.get(target_url, timeout=20)
+                if resp.status_code == 200:
+                    records.extend(self.parse(resp.text, target_url))
+            except Exception:
+                pass
 
         return self._deduplicate(records)
 
@@ -145,17 +158,23 @@ class ChittorgarhIPODataSource(IPODataSource):
     def _build_api_url(
         cls,
         page: int = 1,
+        month: int | None = None,
+        year: int | None = None,
+        financial_year: str | None = None,
     ) -> str:
         today = date.today()
-        financial_year = (
-            f"{today.year}-{str(today.year + 1)[-2:]}"
-            if today.month >= 4
-            else f"{today.year - 1}-{str(today.year)[-2:]}"
-        )
+        m = month if month is not None else today.month
+        y = year if year is not None else today.year
+        if financial_year is None:
+            financial_year = (
+                f"{y}-{str(y + 1)[-2:]}"
+                if m >= 4
+                else f"{y - 1}-{str(y)[-2:]}"
+            )
 
         return (
             f"{cls.API_BASE_URL}/cloud/report/data-read/118/{page}/"
-            f"{today.month}/{today.year}/{financial_year}/0/mainboard/0/"
+            f"{m}/{y}/{financial_year}/0/mainboard/0/"
             "?search="
         )
 
@@ -283,6 +302,75 @@ class ChittorgarhIPODataSource(IPODataSource):
         )
 
     @classmethod
+    def _derive_symbol(cls, company_name: str, slug: str = "") -> str:
+        KNOWN_SYMBOLS = {
+            "bajaj housing finance": "BAJAJHFL",
+            "swiggy": "SWIGGY",
+            "ola electric": "OLAELEC",
+            "hyundai motor": "HYUNDAI",
+            "waaree energies": "WAAREE",
+            "ntpc green": "NTPCGREEN",
+            "kross": "KROSS",
+            "tolins tyres": "TOLINS",
+            "arkade developers": "ARKADE",
+            "northern arc": "NORTHARC",
+            "western carriers": "WESTERN",
+            "p n gadgil": "PNGJL",
+            "premier energies": "PREMIERENE",
+            "orient technologies": "ORIENTTECH",
+            "interarch": "INTERARCH",
+            "unicommerce": "UNIECOM",
+            "firstcry": "FIRSTCRY",
+            "brainbees": "FIRSTCRY",
+            "tata capital": "TATACAP",
+            "lenskart": "LENSKART",
+            "groww": "GROWW",
+            "meesho": "MEESHO",
+            "physicswallah": "PW",
+            "pine labs": "PINELABS",
+            "lg electronics": "LGELECT",
+            "wework": "WEWORK",
+            "zinka": "BLACKBUCK",
+            "blackbuck": "BLACKBUCK",
+            "sagility": "SAGILITY",
+            "afcons": "AFCONS",
+            "manba finance": "MANBA",
+            "krn heat": "KRN",
+            "diffusion engineers": "DIFFUSION",
+            "national securities depository": "NSDL",
+            "canara hsbc": "CANARALIFE",
+            "canara robeco": "CANARAROB",
+            "tenneco": "TENNECO",
+            "corona remedies": "CORONA",
+            "wakefit": "WAKEFIT",
+            "aequs": "AEQUS",
+            "sudeep pharma": "SUDEEP",
+            "excelsoft": "EXCELSOFT",
+            "fujiyama": "FUJIYAMA",
+            "studds": "STUDDS",
+            "orkla": "ORKLA",
+            "rubicon": "RUBICON",
+            "jsw cement": "JSWCEMENT",
+            "bluestone": "BLUESTONE",
+            "all time plastics": "ALLTIME",
+            "urban company": "URBANCO",
+            "vikram solar": "VIKRAMSOL",
+            "patel retail": "PATELRET",
+        }
+        c_lower = company_name.lower()
+        s_lower = slug.lower() if slug else ""
+        for k, v in KNOWN_SYMBOLS.items():
+            if k in c_lower or (s_lower and k in s_lower):
+                return v
+        clean = re.sub(
+            r"(?i)\b(ltd|limited|india|technologies|services|solutions|industries|holdings|infra|infrastructure|enterprises|corp|corporation|co|company)\b",
+            "",
+            company_name,
+        )
+        clean = re.sub(r"[^A-Za-z0-9]", "", clean).upper()
+        return clean[:10] if clean else "IPO"
+
+    @classmethod
     def _parse_report_rows(
         cls,
         rows: list[dict],
@@ -310,15 +398,22 @@ class ChittorgarhIPODataSource(IPODataSource):
             if ipo_id in discovered:
                 continue
 
+            company = str(
+                row.get("Company") or cls._name_from_url(detail_url)
+            ).strip()
+            sym = cls._derive_symbol(company, slug)
+            raw_listing = row.get("Listing Date")
+            parsed_dt = cls._parse_date(raw_listing)
+            listing_str = parsed_dt.strftime("%Y-%m-%d") if parsed_dt else raw_listing
+
             discovered[ipo_id] = {
-                "company_name": str(
-                    row.get("Company") or cls._name_from_url(detail_url)
-                ).strip(),
+                "company_name": company,
+                "symbol": sym,
                 "ipo_id": ipo_id,
                 "ipo_type": ipo_type,
                 "ipo_open_date": row.get("Opening Date"),
                 "ipo_close_date": row.get("Closing Date"),
-                "listing_date": row.get("Listing Date"),
+                "listing_date": listing_str,
                 "detail_url": detail_url,
                 "source": "Chittorgarh",
                 "source_url": source_url,

@@ -34,23 +34,96 @@ from backend.services.ipo_risk_manager import IPORiskManager
 from backend.storage.database import get_connection, initialize_database
 
 
-def get_todays_listing_ipos(target_date: str | None = None) -> list[dict]:
-    """Retrieve IPOs scheduled to list on the specified date (defaults to today)."""
+def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
+    """Retrieve IPOs scheduled to list today, or upcoming/recent active Mainboard candidates."""
     d_str = target_date or date.today().strftime("%Y-%m-%d")
     conn = get_connection()
     try:
+        # 1. Exact listing date match (today or requested date)
         rows = conn.execute(
             """
             SELECT symbol, company_name, listing_date, issue_price
             FROM ipos
-            WHERE listing_date = ? AND symbol IS NOT NULL
+            WHERE listing_date = ? AND symbol IS NOT NULL AND trim(symbol) != ''
             ORDER BY id ASC
             """,
             (d_str,),
         ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+        # 2. Upcoming listing dates (>= today)
+        rows = conn.execute(
+            """
+            SELECT symbol, company_name, listing_date, issue_price
+            FROM ipos
+            WHERE listing_date >= ? AND symbol IS NOT NULL AND trim(symbol) != ''
+            ORDER BY listing_date ASC, id ASC
+            LIMIT 5
+            """,
+            (d_str,),
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+        # 3. Top evaluated Mainboard candidates from 13-rule screening
+        rows = conn.execute(
+            """
+            SELECT i.symbol, i.company_name, i.listing_date, i.issue_price
+            FROM ipos i
+            JOIN ipo_screening_runs r ON (
+                lower(replace(replace(r.company_name, ' Ltd.', ''), ' Limited', '')) =
+                lower(replace(replace(i.company_name, ' Ltd.', ''), ' Limited', ''))
+            )
+            WHERE i.symbol IS NOT NULL AND trim(i.symbol) != ''
+            ORDER BY r.passed DESC, r.id DESC
+            LIMIT 5
+            """,
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+        # 4. Any available Mainboard IPOs in database
+        rows = conn.execute(
+            """
+            SELECT symbol, company_name, listing_date, issue_price
+            FROM ipos
+            WHERE symbol IS NOT NULL AND trim(symbol) != ''
+            ORDER BY id DESC
+            LIMIT 5
+            """,
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def ensure_live_ipos_discovered(logger) -> None:
+    """Ensure database has real Mainboard IPOs and 13-rule screening runs from Chittorgarh."""
+    conn = get_connection()
+    try:
+        run_count = conn.execute("SELECT count(*) FROM ipo_screening_runs").fetchone()[0]
+        ipo_count = conn.execute("SELECT count(*) FROM ipos").fetchone()[0]
+    except Exception:
+        run_count = 0
+        ipo_count = 0
+    finally:
+        conn.close()
+
+    if run_count > 0 and ipo_count > 0:
+        logger.info(f"Database ready: {ipo_count} real Mainboard IPO(s) and {run_count} institutional screening run(s) loaded.")
+        return
+
+    logger.info("Initializing real Indian Mainboard IPOs from Chittorgarh...")
+    try:
+        from backend.services.ipo_discovery_service import IPODiscoveryService
+        from backend.services.ipo_screening_runner import IPOScreeningRunner
+        d_res = IPODiscoveryService().run()
+        logger.info(f"Live Chittorgarh scan: {d_res.get('fetched', 0)} real IPOs fetched, {d_res.get('inserted', 0)} new discoveries.")
+        s_res = IPOScreeningRunner().screen_all()
+        logger.info(f"13-Rule Institutional Screening evaluated {len(s_res)} real Mainboard IPOs.")
+    except Exception as ex:
+        logger.warning(f"Startup discovery check: {ex}")
 
 
 def main():
@@ -96,16 +169,19 @@ def main():
     logger.info(f"MARKET FEED: Mode '{args.feed}' active")
     logger.info("=" * 60)
 
-    # Resolve Candidate IPOs (Zero fake fallback candidates)
+    # Automatically discover & screen real Mainboard IPOs if database is fresh
+    ensure_live_ipos_discovered(logger)
+
+    # Resolve Candidate IPOs (Real Indian Mainboard candidates)
     candidates: list[dict] = []
     if args.symbols:
         candidates = [{"symbol": sym.strip().upper()} for sym in args.symbols]
     elif env_symbols:
         candidates = [{"symbol": sym.strip().upper()} for sym in env_symbols]
     else:
-        candidates = get_todays_listing_ipos(args.date)
+        candidates = get_candidate_ipos(args.date)
         if not candidates:
-            logger.info("No IPOs scheduled to list on the specified date in database. Running in standby monitoring mode.")
+            logger.info("No candidate IPOs ready in database. Running in standby monitoring mode.")
 
     logger.info(f"Prepared {len(candidates)} candidate IPO(s): {[c['symbol'] for c in candidates]}")
 
@@ -155,6 +231,24 @@ def main():
     logger.info(f"Real-Time Monitoring Dashboard live at: {dashboard_url}")
     print(f"\n>>> Live Dashboard running at: {dashboard_url}")
     print(">>> Authorization required: Enter configured AUTH_USERNAME and AUTH_PASSWORD (Press Ctrl+C to stop)\n")
+
+    # Auto-seed live real IPO discoveries if database is fresh/empty
+    def _auto_discover_worker():
+        try:
+            from backend.services.ipo_discovery_service import IPODiscoveryService
+            from backend.services.ipo_screening_runner import IPOScreeningRunner
+            from backend.services.ipo_monitoring_server import get_recent_screening_matrix
+            matrix = get_recent_screening_matrix(limit=1, upcoming_only=False)
+            if not matrix:
+                logger.info("Local SQLite database has no screening runs. Scanning real Mainboard IPOs from Chittorgarh...")
+                d_res = IPODiscoveryService().run()
+                logger.info(f"Live Chittorgarh scan complete: {d_res.get('fetched', 0)} IPOs fetched, {d_res.get('inserted', 0)} new discoveries.")
+                s_res = IPOScreeningRunner().screen_all()
+                logger.info(f"13-Rule Screening evaluated {len(s_res)} real Mainboard IPOs.")
+        except Exception as ex:
+            logger.warning(f"Background live discovery check skipped: {ex}")
+
+    threading.Thread(target=_auto_discover_worker, name="StartupDiscoveryWorker", daemon=True).start()
 
     # Graceful shutdown handler
     running = True
