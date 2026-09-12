@@ -9,7 +9,7 @@ Usage:
   python run_ipo_trading.py --symbols SYMBOL1 SYMBOL2 --port 8080
 
   # Run with live simulation feed only:
-  python run_ipo_trading.py --symbols HORIZONIND LALITHAA --feed sim
+  python run_ipo_trading.py --symbols <SYMBOL> --feed sim
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def main():
     env_symbols = os.getenv("SYMBOLS", "").split()
 
     parser = argparse.ArgumentParser(description="Automated Indian IPO Listing-Day Paper Trading Runner")
-    parser.add_argument("--symbols", nargs="+", help="Specific IPO symbols to trade (e.g. --symbols HORIZONIND LALITHAA)")
+    parser.add_argument("--symbols", nargs="+", help="Specific IPO symbols to trade (space-separated)")
     parser.add_argument("--auto", action="store_true", help="Auto-discover IPOs listing today from local database")
     parser.add_argument("--date", help="Listing date filter for --auto (YYYY-MM-DD)")
     parser.add_argument("--quantity", type=int, default=10, help="Default order lot quantity (default: 10)")
@@ -92,7 +92,7 @@ def main():
     logger.info("=" * 60)
     logger.info("STARTING INDIAN IPO LISTING-DAY PAPER TRADING SETUP")
     logger.info("SAFETY STATUS: 100% PAPER TRADING ONLY - ZERO REAL MONEY RISK")
-    logger.info(f"AUTHORIZATION: Protected with HTTP Basic Auth (User: {args.username})")
+    logger.info("AUTHORIZATION: Protected with HTTP Basic Auth (Configured via environment / args)")
     logger.info(f"MARKET FEED: Mode '{args.feed}' active")
     logger.info("=" * 60)
 
@@ -154,7 +154,7 @@ def main():
     dashboard_url = f"{scheme}://{args.host}:{monitoring_server.port}"
     logger.info(f"Real-Time Monitoring Dashboard live at: {dashboard_url}")
     print(f"\n>>> Live Dashboard running at: {dashboard_url}")
-    print(f">>> Authorization required: Username: {args.username} | Password: {args.password} (Press Ctrl+C to stop)\n")
+    print(">>> Authorization required: Enter configured AUTH_USERNAME and AUTH_PASSWORD (Press Ctrl+C to stop)\n")
 
     # Graceful shutdown handler
     running = True

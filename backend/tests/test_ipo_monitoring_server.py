@@ -95,7 +95,8 @@ def test_dashboard_html_served_when_authenticated(running_server):
         content = response.read().decode("utf-8")
         assert "<!DOCTYPE html>" in content
         assert "100% Paper Trading Only" in content
-        assert "Anish_5337" in content
+        assert "IPO Intelligence Terminal" in content
+        assert "Anish_5337" not in content  # Username must not be exposed in HTML
 
 
 def test_api_status_endpoint(running_server):

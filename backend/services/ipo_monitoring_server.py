@@ -756,7 +756,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       
       <div style="text-align:left; margin-bottom:14px;">
         <label style="font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:600; display:block; margin-bottom:4px;">Username</label>
-        <input type="text" id="auth-user" class="btn" style="width:100%; text-align:left; background:#16202e; border:1px solid var(--border); padding:10px 12px; color:#fff; border-radius:6px;" value="Anish_5337" autocomplete="username">
+        <input type="text" id="auth-user" class="btn" style="width:100%; text-align:left; background:#16202e; border:1px solid var(--border); padding:10px 12px; color:#fff; border-radius:6px;" placeholder="Enter username..." autocomplete="username">
       </div>
       
       <div style="text-align:left; margin-bottom:16px;">
@@ -777,7 +777,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <h1>
           IPO Listing Day Live Intelligence Terminal
           <span class="badge badge-paper">100% Paper Trading Only</span>
-          <span class="badge badge-open" id="auth-badge">🔒 Anish_5337</span>
         </h1>
         <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
           NSE / BSE Listing Schedule: Continuous Trading Commences at 10:00 AM IST | Entry Cutoff: 14:30 | Force Exit: 15:15
@@ -895,10 +894,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div>
           <h3 style="font-size:15px; margin-bottom:4px; color:#fff;">Upcoming IPO Institutional 13-Rule Screening Matrix</h3>
           <p style="font-size:12px; color:var(--muted); margin:0;">
-            Quantitative checklist verified from Chittorgarh & RHP data. Select any IPO manually below to trade it immediately in today's listing session.
+            Quantitative checklist verified from Chittorgarh & RHP data. Select any IPO below or add any symbol manually to trade it.
           </p>
         </div>
-        <button class="btn" onclick="fetchMatrixData()" style="font-size:11px;">🔄 Refresh Matrix</button>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input type="text" id="custom-ipo-sym" class="btn" style="width:140px; text-align:left; background:#16202e; border:1px solid var(--border); padding:6px 10px; font-size:12px; color:#fff; text-transform:uppercase;" placeholder="NSE Symbol">
+          <input type="number" id="custom-ipo-price" class="btn" style="width:90px; text-align:left; background:#16202e; border:1px solid var(--border); padding:6px 10px; font-size:12px; color:#fff;" placeholder="Price (₹)">
+          <button class="btn btn-primary" onclick="addCustomIPO()" style="font-size:11px; padding:6px 12px; font-weight:700;">➕ Add to Trade</button>
+          <button class="btn" onclick="fetchMatrixData()" style="font-size:11px; padding:6px 10px;">🔄 Refresh</button>
+        </div>
       </div>
       <div class="table-container">
         <table>
@@ -1134,8 +1138,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         errEl.style.display = 'none';
       }
       setTimeout(() => {
-        const pass = document.getElementById('auth-pass');
-        if (pass) pass.focus();
+        const u = document.getElementById('auth-user');
+        if (u && !u.value) {
+          u.focus();
+        } else {
+          const pass = document.getElementById('auth-pass');
+          if (pass) pass.focus();
+        }
       }, 100);
     }
 
@@ -1175,8 +1184,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           sessionStorage.setItem('ipo_auth', token);
           localStorage.setItem('ipo_auth', token);
           hideAuthModal();
-          document.getElementById('auth-badge').innerText = `🔒 ${user}`;
-          showToast(`Authenticated as ${user}`);
+          showToast('Authenticated successfully');
           fetchData();
           fetchMatrixData();
           fetchBackendActivity();
@@ -1194,6 +1202,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     function lockTerminal() {
       sessionStorage.removeItem('ipo_auth');
       localStorage.removeItem('ipo_auth');
+      const u = document.getElementById('auth-user');
+      if (u) u.value = '';
+      const p = document.getElementById('auth-pass');
+      if (p) p.value = '';
       showAuthModal();
     }
 
@@ -1458,11 +1470,36 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
+    async function addCustomIPO() {
+      const symInput = document.getElementById('custom-ipo-sym');
+      const priceInput = document.getElementById('custom-ipo-price');
+      const sym = (symInput.value || '').trim().toUpperCase();
+      const price = parseFloat(priceInput.value || '100');
+      if (!sym) {
+        showToast('Please enter an NSE symbol');
+        return;
+      }
+      await toggleSelectIPO(sym, sym, isNaN(price) || price <= 0 ? 100 : price, 'select');
+      symInput.value = '';
+      priceInput.value = '';
+      showToast(`Added ${sym} to active trading session`);
+    }
+
     function renderMatrix() {
       const body = document.getElementById('matrix-body');
       const matrix = globalData.matrix;
       if (!matrix || matrix.length === 0) {
-        body.innerHTML = '<tr><td colspan="12" class="empty-msg">No upcoming IPOs currently queued in screening pipeline.</td></tr>';
+        body.innerHTML = `
+          <tr>
+            <td colspan="12" style="text-align:center; padding:28px 16px; color:var(--muted); font-size:12px;">
+              <div style="font-size:22px; margin-bottom:6px;">📡</div>
+              <strong style="color:#fff;">No upcoming IPO discoveries in local SQLite database.</strong><br>
+              <span style="font-size:11px; display:inline-block; margin-top:4px;">
+                Enter any symbol above and click <strong>➕ Add to Trade</strong>, or configure <code>SYMBOLS</code> in your <code>.env</code> file.
+              </span>
+            </td>
+          </tr>
+        `;
         return;
       }
 
@@ -1735,7 +1772,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     // Keyboard support for login enter key
     document.addEventListener('DOMContentLoaded', () => {
+      const user = document.getElementById('auth-user');
       const pass = document.getElementById('auth-pass');
+      if (user) {
+        user.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            if (pass && !pass.value) pass.focus();
+            else submitAuthLogin();
+          }
+        });
+      }
       if (pass) {
         pass.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') submitAuthLogin();
@@ -1751,7 +1797,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     });
 
     // Check credentials on load
-    if (!getAuthHeader()) {
+    const savedAuth = getAuthHeader();
+    if (!savedAuth) {
       showAuthModal();
     } else {
       fetchData();
