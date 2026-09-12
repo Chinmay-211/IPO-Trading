@@ -92,6 +92,7 @@ class IPODiscoveryService:
             if not c_name:
                 return
 
+            raw_listing = (record.get("listing_date") or "").strip()
             clean_listing = ""
             if raw_listing:
                 for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y", "%d-%m-%Y"):

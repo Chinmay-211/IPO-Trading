@@ -44,8 +44,9 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                        lower(replace(replace(d.company_name, ' Ltd.', ''), ' Limited', ''))
                 )
                 LEFT JOIN ipos i ON (
-                    lower(replace(replace(r.company_name, ' Ltd.', ''), ' Limited', '')) =
-                    lower(replace(replace(i.company_name, ' Ltd.', ''), ' Limited', ''))
+                    lower(trim(replace(replace(replace(replace(r.company_name, ' Ltd.', ''), ' Limited', ''), ' P', ''), ' O', ''))) =
+                    lower(trim(replace(replace(replace(replace(i.company_name, ' Ltd.', ''), ' Limited', ''), ' P', ''), ' O', '')))
+                    OR lower(trim(r.company_name)) = lower(trim(i.company_name))
                 )
                 ORDER BY r.id DESC
                 """,
@@ -2197,6 +2198,7 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
         if path in ("/api/ipos/select", "/api/select_ipo"):
             action = str(body_data.get("action", "select")).strip().lower()
             sym = sanitize_symbol(body_data.get("symbol", ""))
+            c_name = str(body_data.get("company_name", "")).strip()
             issue_p = None
             if body_data.get("issue_price"):
                 try:

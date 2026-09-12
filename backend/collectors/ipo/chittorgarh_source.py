@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import json
 import re
 from datetime import date, datetime
+from typing import Any
 from urllib.parse import urljoin
 
 import requests
@@ -125,13 +128,14 @@ class ChittorgarhIPODataSource(IPODataSource):
                 while page <= total_pages:
                     api_url = self._build_api_url(report_id=r_id, page=page, month=m, year=y, financial_year=fy)
                     response = self.session.get(api_url, timeout=15)
-                    if response.status_code != 200:
+                    status = getattr(response, "status_code", 200)
+                    if isinstance(status, int) and status != 200:
                         break
                     try:
                         payload = response.json()
                     except Exception:
                         break
-                    if not isinstance(payload, dict) or payload.get("msg") != 1 or not payload.get("reportTableData"):
+                    if not isinstance(payload, dict) or not payload.get("reportTableData"):
                         break
                     parsed = self.parse(json.dumps(payload), target_url)
                     records.extend(parsed)
@@ -472,6 +476,7 @@ class ChittorgarhIPODataSource(IPODataSource):
                 row.get("Company") or cls._name_from_url(detail_url)
             ).strip()
             company = re.sub(r"<[^>]+>", "", company).strip()
+            company = re.sub(r"\s+[POpo]$", "", company).strip()
             sym = row.get("~nse_symbol") or cls._derive_symbol(company, slug)
             listing_str = parsed_dt.strftime("%Y-%m-%d") if parsed_dt else ""
             issue_p = cls._parse_price(
