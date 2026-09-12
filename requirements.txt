@@ -2,6 +2,7 @@
 smartapi-python>=1.5.5
 kiteconnect>=5.2.1
 pyotp>=2.10.0
+logzero>=1.7.0
 
 # Network & Web Scraping
 requests>=2.31.0
