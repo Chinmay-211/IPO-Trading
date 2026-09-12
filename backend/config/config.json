@@ -1,0 +1,20 @@
+{
+    "project": {
+        "name": "IPO Trading System",
+        "version": "0.1.0"
+    },
+    "data": {
+        "raw_directory": "data/raw",
+        "processed_directory": "data/processed"
+    },
+    "ipo": {
+        "start_year": 2019,
+        "end_year": 2026
+    },
+    "market": {
+        "index": "NIFTY 50"
+    },
+    "backtest": {
+        "initial_capital": 100000
+    }
+}

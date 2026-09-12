@@ -1,0 +1,58 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Secrets & Credentials
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+
+# Databases & Runtime State (Keep cache seed)
+*.db
+*.sqlite
+*.sqlite3
+data/raw/
+data/processed/
+
+# Application Logs
+logs/
+*.log
+
+# Temporary, Debug & Scratch Dumps
+*.tmp
+*.bak
+*.swp
+*~
+*_debug.html
+
+# Docker Local Overrides
+.docker/
+
+# Operating System & IDEs
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

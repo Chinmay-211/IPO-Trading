@@ -1,0 +1,32 @@
+services:
+  # Master Indian IPO Listing-Day Automated Paper Trading Service
+  ipo-trading:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ipo_trading_terminal
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5050
+      - AUTH_USERNAME=Anish_5337
+      - AUTH_PASSWORD=Anish_9482
+      - SYMBOLS=HORIZONIND LALITHAA
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+  # Test runner service for container verification
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ipo_trading_test
+    command: ["pytest", "-q"]
+    profiles:
+      - test
