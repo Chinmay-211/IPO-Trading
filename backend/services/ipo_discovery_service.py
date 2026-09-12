@@ -92,19 +92,19 @@ class IPODiscoveryService:
             if not c_name:
                 return
 
-            raw_listing = (record.get("listing_date") or "").strip()
-            # Do NOT sync already-listed IPOs
+            clean_listing = ""
             if raw_listing:
-                try:
-                    for fmt in ("%Y-%m-%d", "%d-%b-%Y"):
-                        try:
-                            if datetime.strptime(raw_listing, fmt).date() < date.today():
-                                return
-                            break
-                        except ValueError:
-                            pass
-                except Exception:
-                    pass
+                for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y", "%d-%m-%Y"):
+                    try:
+                        p_dt = datetime.strptime(raw_listing.split("T")[0].strip(), fmt).date()
+                        if p_dt < date.today():
+                            return
+                        clean_listing = p_dt.strftime("%Y-%m-%d")
+                        break
+                    except ValueError:
+                        pass
+                if not clean_listing:
+                    clean_listing = raw_listing
 
             sym = record.get("symbol")
             if sym:
@@ -131,13 +131,13 @@ class IPODiscoveryService:
                     conn.execute(
                         """
                         UPDATE ipos
-                        SET symbol = COALESCE(NULLIF(symbol, ''), ?),
-                            listing_date = COALESCE(NULLIF(listing_date, ''), ?),
+                        SET symbol = COALESCE(NULLIF(?, ''), symbol),
+                            listing_date = COALESCE(NULLIF(?, ''), listing_date),
                             issue_price = COALESCE(?, issue_price),
                             source = 'Chittorgarh'
                         WHERE id = ?
                         """,
-                        (sym, raw_listing, price, existing[0]),
+                        (sym, clean_listing, price, existing[0]),
                     )
                 else:
                     conn.execute(
@@ -145,7 +145,7 @@ class IPODiscoveryService:
                         INSERT INTO ipos (company_name, symbol, listing_date, issue_price, source, collected_at)
                         VALUES (?, ?, ?, ?, 'Chittorgarh', ?)
                         """,
-                        (c_name, sym, raw_listing, price, now_iso),
+                        (c_name, sym, clean_listing, price, now_iso),
                     )
                 conn.commit()
             finally:

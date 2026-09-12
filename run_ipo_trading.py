@@ -59,7 +59,10 @@ def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
             FROM ipos
             WHERE (listing_date > ? OR listing_date IS NULL OR listing_date = '')
               AND symbol IS NOT NULL AND trim(symbol) != ''
-            ORDER BY listing_date ASC, id ASC
+            ORDER BY 
+              CASE WHEN listing_date IS NOT NULL AND trim(listing_date) != '' THEN 0 ELSE 1 END,
+              listing_date ASC,
+              id ASC
             LIMIT 5
             """,
             (d_str,),

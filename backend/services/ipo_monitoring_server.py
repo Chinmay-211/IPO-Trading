@@ -49,12 +49,33 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
 
             today = date.today()
 
-            def _parse_d(s: str | None) -> date | None:
+            def _parse_d(s: Any) -> date | None:
                 if not s:
                     return None
-                for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
+                if hasattr(s, "year"):
+                    return s
+                import re
+                text = str(s).strip()
+                if "T" in text:
+                    text = text.split("T")[0]
+                if " " in text and ("-" in text or "/" in text):
+                    text = text.split(" ")[0]
+                text = re.sub(r"<[^>]+>", "", text).strip()
+                for fmt in (
+                    "%Y-%m-%d",
+                    "%d-%b-%Y",
+                    "%d-%B-%Y",
+                    "%d-%m-%Y",
+                    "%d/%m/%Y",
+                    "%Y/%m/%d",
+                    "%d-%b-%y",
+                    "%b %d, %Y",
+                    "%B %d, %Y",
+                    "%d %b %Y",
+                    "%d %B %Y",
+                ):
                     try:
-                        return datetime.strptime(s.strip(), fmt).date()
+                        return datetime.strptime(text, fmt).date()
                     except ValueError:
                         pass
                 return None
@@ -63,32 +84,30 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                 parsed = _parse_d(raw_listing)
                 if parsed:
                     return (parsed.strftime("%d-%b-%Y"), parsed)
-                c_dt = _parse_d(close_date)
-                if c_dt:
-                    cur = c_dt
-                    added = 0
-                    while added < 3:
-                        cur += timedelta(days=1)
-                        if cur.weekday() < 5:  # Skip Saturday (5) & Sunday (6)
-                            added += 1
-                    return (cur.strftime("%d-%b-%Y") + " (T+3)", cur)
                 return ("TBD", None)
 
             def _get_ipo_state(open_date_str: str | None, close_date_str: str | None, listing_dt: date | None) -> tuple[str, str]:
                 o_dt = _parse_d(open_date_str)
                 c_dt = _parse_d(close_date_str)
                 if listing_dt and listing_dt == today:
-                    return ("Listing Day (T+3 Today)", "badge-green")
+                    return ("Listing Day (Today)", "badge-green")
                 if c_dt and today > c_dt:
-                    return ("Allotment & Circular (T+1/T+2)", "badge-cyan")
+                    return ("Allotment & Circular", "badge-cyan")
                 if o_dt and c_dt and o_dt <= today <= c_dt:
                     return ("Public Bidding Open", "badge-green")
                 if o_dt and today < o_dt:
                     return (f"Upcoming (Opens {o_dt.strftime('%d-%b')})", "badge-amber")
                 return ("Upcoming (RHP Filed)", "badge-amber")
 
-            matrix = []
+            seen_companies: set[str] = set()
+            matrix: list[dict[str, Any]] = []
+
             for run in runs:
+                c_norm = run["company_name"].strip().lower()
+                if c_norm in seen_companies:
+                    continue
+                seen_companies.add(c_norm)
+
                 display_date, dt = _resolve_listing_date(run["listing_date"], run["ipo_close_date"])
                 # STRICT USER REQUIREMENT: There is no need of already listed IPOs!
                 if dt is not None and dt < today:
@@ -99,6 +118,8 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                 run_dict["listing_date"] = display_date
                 run_dict["ipo_state"] = state_label
                 run_dict["ipo_state_badge"] = badge_class
+                run_dict["_listing_dt"] = dt
+                run_dict["_open_dt"] = _parse_d(run["ipo_open_date"])
 
                 rules = conn.execute(
                     """
@@ -111,8 +132,23 @@ def get_recent_screening_matrix(limit: int | None = None, upcoming_only: bool = 
                 ).fetchall()
                 run_dict["rules"] = [dict(r) for r in rules]
                 matrix.append(run_dict)
-                if limit and len(matrix) >= limit:
-                    break
+
+            # Chronological sort: earliest upcoming listing date first, TBDs at the end
+            matrix.sort(
+                key=lambda item: (
+                    0 if item["_listing_dt"] is not None else 1,
+                    item["_listing_dt"] if item["_listing_dt"] is not None else (item["_open_dt"] or date.max),
+                    item["company_name"],
+                )
+            )
+
+            for m in matrix:
+                m.pop("_listing_dt", None)
+                m.pop("_open_dt", None)
+
+            if limit:
+                matrix = matrix[:limit]
+
             return matrix
         finally:
             conn.close()

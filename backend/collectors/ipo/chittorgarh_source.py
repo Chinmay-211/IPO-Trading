@@ -412,17 +412,39 @@ class ChittorgarhIPODataSource(IPODataSource):
             if ipo_id in discovered:
                 continue
 
-            raw_listing = row.get("Listing Date") or row.get("~ListingDate")
+            raw_listing = (
+                row.get("Listing Date")
+                or row.get("~ListingDate")
+                or row.get("ListingDate")
+                or row.get("listing_date")
+                or row.get("~listing_date")
+            )
             parsed_dt = cls._parse_date(raw_listing)
-            if not parsed_dt and row.get("~ListingDate"):
-                parsed_dt = cls._parse_date(row.get("~ListingDate"))
 
             # STRICT USER REQUIREMENT: There is no need of already listed IPOs!
             if parsed_dt is not None and parsed_dt < today:
                 continue
 
+            open_raw = (
+                row.get("Opening Date")
+                or row.get("~IssueOpenDate")
+                or row.get("IssueOpenDate")
+                or row.get("~OpeningDate")
+                or row.get("OpeningDate")
+                or row.get("ipo_open_date")
+            )
+            close_raw = (
+                row.get("Closing Date")
+                or row.get("~IssueCloseDate")
+                or row.get("IssueCloseDate")
+                or row.get("~ClosingDate")
+                or row.get("ClosingDate")
+                or row.get("ipo_close_date")
+            )
+            o_dt = cls._parse_date(open_raw)
+            c_dt = cls._parse_date(close_raw)
+
             # Skip if closing date was more than 14 days ago and no listing date
-            c_dt = cls._parse_date(row.get("Closing Date") or row.get("~IssueCloseDate"))
             if parsed_dt is None and c_dt is not None and (today - c_dt).days > 14:
                 continue
 
@@ -442,8 +464,8 @@ class ChittorgarhIPODataSource(IPODataSource):
                 "issue_price": issue_p,
                 "ipo_id": ipo_id,
                 "ipo_type": ipo_type,
-                "ipo_open_date": row.get("Opening Date"),
-                "ipo_close_date": row.get("Closing Date"),
+                "ipo_open_date": o_dt.strftime("%Y-%m-%d") if o_dt else (open_raw or ""),
+                "ipo_close_date": c_dt.strftime("%Y-%m-%d") if c_dt else (close_raw or ""),
                 "listing_date": listing_str,
                 "detail_url": detail_url,
                 "source": "Chittorgarh",

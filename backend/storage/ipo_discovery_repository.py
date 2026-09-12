@@ -13,7 +13,7 @@ class IPODiscoveryRepository:
         try:
             cursor = connection.execute(
                 """
-                INSERT OR IGNORE INTO ipo_discoveries (
+                INSERT INTO ipo_discoveries (
                     chittorgarh_ipo_id,
                     company_name,
                     ipo_type,
@@ -26,6 +26,13 @@ class IPODiscoveryRepository:
                     updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chittorgarh_ipo_id) DO UPDATE SET
+                    company_name = excluded.company_name,
+                    ipo_open_date = COALESCE(NULLIF(excluded.ipo_open_date, ''), ipo_discoveries.ipo_open_date),
+                    ipo_close_date = COALESCE(NULLIF(excluded.ipo_close_date, ''), ipo_discoveries.ipo_close_date),
+                    listing_date = COALESCE(NULLIF(excluded.listing_date, ''), ipo_discoveries.listing_date),
+                    detail_url = COALESCE(NULLIF(excluded.detail_url, ''), ipo_discoveries.detail_url),
+                    updated_at = excluded.updated_at
                 """,
                 (
                     discovery.chittorgarh_ipo_id,

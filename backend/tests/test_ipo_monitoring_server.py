@@ -298,3 +298,92 @@ def test_api_post_ipo_select_auto_derives_symbol(running_server):
         assert data["symbol"] == "PRANAV"
         assert "PRANAV" in data["registered_symbols"]
 
+
+def test_screening_matrix_chronological_listing_date_order(monkeypatch):
+    from datetime import date, timedelta
+    from backend.services.ipo_monitoring_server import get_recent_screening_matrix
+
+    today = date.today()
+    d1 = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+    d2 = (today + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    fake_runs = [
+        {
+            "id": 1,
+            "chittorgarh_ipo_id": 101,
+            "company_name": "Far Future IPO Ltd.",
+            "screened_at": "2026-09-12T10:00:00",
+            "strategy_result": "PASS",
+            "passed": 13,
+            "failed": 0,
+            "listing_date": d2,
+            "ipo_open_date": "2026-09-10",
+            "ipo_close_date": "2026-09-12",
+            "issue_price": "500",
+            "symbol": "FARFUT",
+        },
+        {
+            "id": 2,
+            "chittorgarh_ipo_id": 102,
+            "company_name": "TBD Listing IPO Ltd.",
+            "screened_at": "2026-09-12T10:05:00",
+            "strategy_result": "WATCHING",
+            "passed": 10,
+            "failed": 3,
+            "listing_date": "",
+            "ipo_open_date": "2026-09-11",
+            "ipo_close_date": "2026-09-13",
+            "issue_price": "200",
+            "symbol": "TBDIPO",
+        },
+        {
+            "id": 3,
+            "chittorgarh_ipo_id": 103,
+            "company_name": "Near Future IPO Ltd.",
+            "screened_at": "2026-09-12T10:10:00",
+            "strategy_result": "PASS",
+            "passed": 13,
+            "failed": 0,
+            "listing_date": d1,
+            "ipo_open_date": "2026-09-08",
+            "ipo_close_date": "2026-09-10",
+            "issue_price": "1000",
+            "symbol": "NEARFUT",
+        },
+    ]
+
+    class FakeCursor:
+        def fetchall(self):
+            return fake_runs
+
+    class FakeConn:
+        def execute(self, query, params=None):
+            if "ipo_screening_rule_results" in query:
+                class EmptyCursor:
+                    def fetchall(self):
+                        return []
+                return EmptyCursor()
+            return FakeCursor()
+
+        def close(self):
+            pass
+
+    import backend.storage.database as db_mod
+    monkeypatch.setattr(db_mod, "get_connection", lambda: FakeConn())
+
+    matrix = get_recent_screening_matrix()
+    assert len(matrix) == 3
+    # 1. Earliest upcoming listing date must be first
+    assert matrix[0]["company_name"] == "Near Future IPO Ltd."
+    assert matrix[0]["listing_date"] == (today + timedelta(days=2)).strftime("%d-%b-%Y")
+    assert "(T+3)" not in matrix[0]["listing_date"]
+
+    # 2. Subsequent upcoming listing date must be second
+    assert matrix[1]["company_name"] == "Far Future IPO Ltd."
+    assert matrix[1]["listing_date"] == (today + timedelta(days=5)).strftime("%d-%b-%Y")
+    assert "(T+3)" not in matrix[1]["listing_date"]
+
+    # 3. TBD IPO must be ordered last
+    assert matrix[2]["company_name"] == "TBD Listing IPO Ltd."
+    assert matrix[2]["listing_date"] == "TBD"
+
