@@ -8,15 +8,12 @@ services:
     restart: unless-stopped
     ports:
       - "5050:5050"
-    environment:
-      - HOST=0.0.0.0
-      - PORT=5050
-      - AUTH_USERNAME=Anish_5337
-      - AUTH_PASSWORD=Anish_9482
-      - SYMBOLS=HORIZONIND LALITHAA
     env_file:
       - path: .env
         required: false
+    environment:
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-5050}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

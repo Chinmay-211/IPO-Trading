@@ -28,6 +28,11 @@ def test_rate_limiter_rpm_enforcement():
     # 4th request exceeds max_rpm
     assert limiter.check_rate_limit(ip) is False
 
+    # Disabling rate limit with 0
+    disabled_limiter = SecurityRateLimiter(max_rpm=0)
+    for _ in range(50):
+        assert disabled_limiter.check_rate_limit(ip) is True
+
 
 def test_rate_limiter_brute_force_lockout():
     limiter = SecurityRateLimiter(max_failures=3, lockout_seconds=10)

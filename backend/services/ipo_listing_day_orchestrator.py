@@ -69,6 +69,7 @@ class IPOListingDayOrchestrator:
 
         self.engine: LiveIPOPaperEngine | None = None
         self.feeder: AngelOneLiveEngineFeeder | None = None
+        self.ws_source: Any | None = None
         self.brokers: dict[str, PaperBroker] = {}
         self.token_to_symbol: dict[str, str] = {}
         self.registered_ipos: list[dict[str, Any]] = []
@@ -189,6 +190,11 @@ class IPOListingDayOrchestrator:
             self.token_to_symbol[token] = raw_symbol
             if self.feeder is not None:
                 self.feeder.token_to_symbol[token] = raw_symbol
+            if self.ws_source is not None:
+                try:
+                    self.ws_source.subscribe_nse([token])
+                except Exception:
+                    pass
 
         # Build pipeline if not already present
         if raw_symbol not in self.brokers:
@@ -271,7 +277,11 @@ class IPOListingDayOrchestrator:
             raise RuntimeError("Orchestrator is not prepared.")
 
         if isinstance(tick, dict):
-            sym = str(tick.get("symbol", "")).strip().upper()
+            token = str(tick.get("token", "")).strip()
+            raw_sym = str(tick.get("symbol", "")).strip().upper()
+            sym = self.token_to_symbol.get(token) or raw_sym
+            if sym:
+                tick["symbol"] = sym
             price = float(tick.get("price", 0))
             if sym and price > 0:
                 open_p = price

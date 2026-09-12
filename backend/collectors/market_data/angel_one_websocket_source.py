@@ -44,14 +44,13 @@ class AngelOneWebSocketSource:
         self.pin = os.getenv("ANGEL_PIN")
         self.totp_secret = os.getenv("ANGEL_TOTP_SECRET")
 
-        if not all([
-            self.api_key,
-            self.client_id,
-            self.pin,
-            self.totp_secret,
-        ]):
+        missing = [
+            var for var in ["ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_PIN", "ANGEL_TOTP_SECRET"]
+            if not os.getenv(var)
+        ]
+        if missing:
             raise ValueError(
-                "Angel One credentials are missing from .env"
+                f"Missing required Angel One credentials in .env: {', '.join(missing)}"
             )
 
         self.on_tick = on_tick
@@ -81,14 +80,21 @@ class AngelOneWebSocketSource:
                 self.pin,
                 totp,
             )
-        except Exception:
+        except Exception as exc:
             raise RuntimeError(
-                "Angel One login could not be completed."
-            ) from None
+                f"Angel One session generation request failed: {exc}"
+            ) from exc
+
+        if not response or not isinstance(response, dict):
+            raise RuntimeError(
+                f"Angel One login returned unexpected response: {response}"
+            )
 
         if not response.get("status"):
+            err_msg = response.get("message", "Authentication rejected")
+            err_code = response.get("errorcode", "UNKNOWN")
             raise RuntimeError(
-                "Angel One login failed."
+                f"Angel One login failed: {err_msg} (Error Code: {err_code})"
             )
 
         data = response.get("data") or {}
@@ -216,10 +222,9 @@ class AngelOneWebSocketSource:
         error,
     ) -> None:
         """WebSocket error callback."""
-
-        print(
-            f"Angel One WebSocket error: {error}"
-        )
+        import sys
+        sys.stderr.write(f"\n[ERROR] Angel One SmartWebSocketV2 error: {error}\n")
+        sys.stderr.flush()
 
     @staticmethod
     def _on_close(
@@ -254,8 +259,11 @@ class AngelOneWebSocketSource:
             return None
 
         ltp = message.get("last_traded_price")
+        is_paise = False
 
-        if ltp is None:
+        if ltp is not None:
+            is_paise = True
+        else:
             ltp = message.get("ltp")
 
         if ltp is None:
@@ -268,6 +276,10 @@ class AngelOneWebSocketSource:
 
         if price <= 0:
             return None
+
+        # SmartWebSocketV2 delivers LTP in paise in binary data packets (e.g. 5567 paise -> Rs. 55.67)
+        if is_paise and (isinstance(ltp, int) or price > 1000):
+            price = round(price / 100.0, 2)
 
         timestamp = (
             message.get("exchange_timestamp")

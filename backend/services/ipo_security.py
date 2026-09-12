@@ -7,9 +7,9 @@ from collections import defaultdict
 from typing import Any
 
 MAX_PAYLOAD_BYTES = 64 * 1024  # 64 KB max request body size
-DEFAULT_MAX_AUTH_FAILURES = 5   # Max 5 failed attempts before lockout
-DEFAULT_LOCKOUT_SECONDS = 900   # 15 minute cooldown
-DEFAULT_RATE_LIMIT_RPM = 120    # Max 120 requests/minute per client IP
+DEFAULT_MAX_AUTH_FAILURES = 15  # Max 15 failed attempts before lockout
+DEFAULT_LOCKOUT_SECONDS = 300   # 5 minute cooldown
+DEFAULT_RATE_LIMIT_RPM = 1200   # Max 1200 requests/minute per client IP (20 req/sec)
 
 
 class SecurityRateLimiter:
@@ -46,7 +46,9 @@ class SecurityRateLimiter:
             return False, 0
 
     def check_rate_limit(self, ip: str) -> bool:
-        """Enforce maximum requests per minute per IP address."""
+        """Enforce maximum requests per minute per IP address (0 or negative to disable)."""
+        if self.max_rpm <= 0:
+            return True
         now = time.time()
         with self._lock:
             history = [t for t in self._requests[ip] if now - t < 60.0]
@@ -126,3 +128,40 @@ def sanitize_symbol(raw_symbol: str) -> str:
     """Sanitize and validate an IPO ticker symbol (alphanumeric, max 20 characters)."""
     cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(raw_symbol).strip().upper())
     return cleaned[:20]
+
+
+def generate_self_signed_cert(cert_path: str, key_path: str, ip_or_host: str = "0.0.0.0") -> bool:
+    """
+    Generate a lightweight self-signed SSL/TLS certificate for direct IP HTTPS.
+    Uses openssl via standard library subprocess with zero external dependencies.
+    """
+    import os
+    import subprocess
+
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        return True
+
+    os.makedirs(os.path.dirname(os.path.abspath(cert_path)), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(key_path)), exist_ok=True)
+
+    cmd = [
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        key_path,
+        "-out",
+        cert_path,
+        "-days",
+        "365",
+        "-nodes",
+        "-subj",
+        f"/CN={ip_or_host}/O=IPOTool/OU=TradingTerminal",
+    ]
+    try:
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        return True
+    except Exception:
+        return False

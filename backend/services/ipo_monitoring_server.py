@@ -2187,7 +2187,7 @@ class IPOMonitoringServer:
         ssl_certfile: str | None = None,
         ssl_keyfile: str | None = None,
         allowed_origins: list[str] | None = None,
-        rate_limit_rpm: int = 120,
+        rate_limit_rpm: int | None = None,
     ):
         self.orchestrator = orchestrator
         self.host = host
@@ -2197,7 +2197,8 @@ class IPOMonitoringServer:
         self.ssl_certfile = ssl_certfile or os.getenv("SSL_CERTFILE")
         self.ssl_keyfile = ssl_keyfile or os.getenv("SSL_KEYFILE")
         self.allowed_origins = allowed_origins
-        self.rate_limiter = SecurityRateLimiter(max_rpm=rate_limit_rpm)
+        effective_rpm = int(rate_limit_rpm) if rate_limit_rpm is not None else int(os.getenv("RATE_LIMIT_RPM", "1200"))
+        self.rate_limiter = SecurityRateLimiter(max_rpm=effective_rpm)
         self.is_ssl = False
         self.httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -2234,19 +2235,14 @@ class IPOMonitoringServer:
             return
 
         bind_port = self.port
-        for offset in range(25):
-            candidate = bind_port if bind_port == 0 else (bind_port + offset)
-            try:
-                self.httpd = ThreadingHTTPServer((self.host, candidate), IPOMonitoringHandler)
-                self.port = self.httpd.server_port
-                break
-            except OSError:
-                if bind_port == 0:
-                    raise
-                continue
-
-        if self.httpd is None:
-            raise OSError(f"Could not bind to any port near {bind_port}.")
+        try:
+            self.httpd = ThreadingHTTPServer((self.host, bind_port), IPOMonitoringHandler)
+            self.port = self.httpd.server_port
+        except OSError as exc:
+            raise OSError(
+                f"Failed to bind dashboard server to {self.host}:{bind_port}. "
+                f"Port {bind_port} is already in use by another process. Details: {exc}"
+            ) from exc
 
         # Wrap in TLS if certificate and key exist
         if self.ssl_certfile and self.ssl_keyfile:

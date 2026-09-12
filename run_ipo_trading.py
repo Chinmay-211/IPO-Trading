@@ -24,6 +24,9 @@ import time
 from datetime import datetime, date
 from typing import Any
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from backend.config.logging_config import setup_logging
 from backend.services.ipo_listing_day_orchestrator import IPOListingDayOrchestrator
 from backend.services.ipo_monitoring_server import IPOMonitoringServer
@@ -75,8 +78,10 @@ def main():
     parser.add_argument("--port", type=int, default=default_port, help=f"Monitoring dashboard port (default: {default_port})")
     parser.add_argument("--username", default=os.getenv("AUTH_USERNAME", "Anish_5337"), help="Basic auth username (default: Anish_5337)")
     parser.add_argument("--password", default=os.getenv("AUTH_PASSWORD", "Anish_9482"), help="Basic auth password (default: Anish_9482)")
+    parser.add_argument("--ssl", action="store_true", default=os.getenv("SSL_ENABLED", "").lower() in ("true", "1", "yes"), help="Enable HTTPS (auto-generates self-signed certificate for direct IP if none provided)")
     parser.add_argument("--ssl-cert", default=os.getenv("SSL_CERTFILE"), help="Path to SSL certificate file (.crt / .pem) for HTTPS")
     parser.add_argument("--ssl-key", default=os.getenv("SSL_KEYFILE"), help="Path to SSL private key file (.key) for HTTPS")
+    parser.add_argument("--rate-limit", type=int, default=int(os.getenv("RATE_LIMIT_RPM", "1200")), help="Rate limit maximum requests per minute per client IP (default: 1200, 0 to disable)")
 
     args = parser.parse_args()
 
@@ -118,6 +123,21 @@ def main():
     prepared_symbols = orchestrator.prepare_session(candidates)
     logger.info(f"Session prepared for: {prepared_symbols}")
 
+    # Resolve SSL / TLS configuration for HTTPS
+    ssl_cert = args.ssl_cert
+    ssl_key = args.ssl_key
+    if args.ssl or (ssl_cert and ssl_key):
+        if not (ssl_cert and ssl_key and os.path.exists(ssl_cert) and os.path.exists(ssl_key)):
+            auto_cert = "data/certs/cert.pem"
+            auto_key = "data/certs/key.pem"
+            from backend.services.ipo_security import generate_self_signed_cert
+            if generate_self_signed_cert(auto_cert, auto_key, ip_or_host=args.host):
+                ssl_cert = auto_cert
+                ssl_key = auto_key
+                logger.info(f"Self-signed SSL certificate ready for IP HTTPS: {ssl_cert}")
+            else:
+                logger.warning("Could not generate self-signed SSL certificate. Proceeding on HTTP.")
+
     # Start Real-Time Web Monitoring Server
     monitoring_server = IPOMonitoringServer(
         orchestrator=orchestrator,
@@ -125,8 +145,9 @@ def main():
         port=args.port,
         auth_username=args.username,
         auth_password=args.password,
-        ssl_certfile=args.ssl_cert,
-        ssl_keyfile=args.ssl_key,
+        ssl_certfile=ssl_cert,
+        ssl_keyfile=ssl_key,
+        rate_limit_rpm=args.rate_limit,
     )
     monitoring_server.start()
     scheme = "https" if monitoring_server.is_ssl else "http"
@@ -171,17 +192,31 @@ def main():
 
     orchestrator.process_tick = tracked_process_tick
 
-    # Connect Angel One WebSocket if configured and enabled
-    if args.feed in ("auto", "angel") and os.getenv("ANGEL_API_KEY") and os.getenv("ANGEL_CLIENT_ID"):
+    ws_source = None
+    if args.feed in ("auto", "angel"):
+        # Zero silent fallbacks: Fail fast with exact error if Angel One credentials or connection fail
+        missing_creds = [
+            var for var in ["ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_PIN", "ANGEL_TOTP_SECRET"]
+            if not os.getenv(var)
+        ]
+        if missing_creds:
+            raise RuntimeError(
+                f"Cannot start live market feed '{args.feed}': Missing credentials in .env: {', '.join(missing_creds)}. "
+                f"Please define them in your .env file or run with --feed sim for offline simulation."
+            )
+
         try:
             from backend.collectors.market_data.angel_one_websocket_source import AngelOneWebSocketSource
             ws_source = AngelOneWebSocketSource(on_tick=orchestrator.process_tick)
             ws_source.authenticate()
             tokens = list(orchestrator.token_to_symbol.keys())
-            if tokens:
+            if not tokens:
+                logger.warning(f"No NSE tokens resolved for candidates: {prepared_symbols}. Verify symbols exist in Angel One instrument list.")
+            else:
                 ws_source.subscribe_nse(tokens)
             ws_thread = threading.Thread(target=ws_source.connect, name="AngelOneWSThread", daemon=True)
             ws_thread.start()
+            orchestrator.ws_source = ws_source
             logger.info(f"Angel One SmartWebSocketV2 connected & subscribed to NSE tokens: {tokens}")
             orchestrator.feed_source_name = "ANGEL_ONE_WEBSOCKET"
             orchestrator.feed_status = "STREAMING_LIVE"
@@ -191,73 +226,69 @@ def main():
                 f"Angel One WebSocket connected. Streaming {len(tokens)} token(s) live from NSE.",
             )
         except Exception as exc:
-            logger.warning(f"Angel One live feed connection notice: {exc}")
+            logger.error(f"Angel One live feed connection failed: {exc}")
             monitoring_server.log_activity(
-                "WARNING",
+                "ALERT",
                 "MARKET",
-                f"Angel One WebSocket notice: {exc}. Continuous live paper stream active.",
+                f"Angel One connection failed: {exc}",
             )
-            if args.feed == "angel":
-                raise
+            raise RuntimeError(f"Angel One live feed failed: {exc}") from exc
 
-    # Dynamic Continuous Market Feed Loop (Guarantees Nothing is Static)
-    def live_market_ticker_loop():
-        """Ensure continuous dynamic market ticks flow every second during session."""
-        current_prices: dict[str, float] = {}
-        opening_prices: dict[str, float] = {}
-        for c in candidates:
-            sym = c.get("symbol", "").upper()
-            try:
-                ip = float(c.get("issue_price", 100.0))
-            except Exception:
-                ip = 100.0
-            current_prices[sym] = ip
-            opening_prices[sym] = ip
-
-        for sym in prepared_symbols:
-            if sym not in current_prices:
-                current_prices[sym] = 100.0
-                opening_prices[sym] = 100.0
-
-        tick_count = 0
-        standby_logged = False
-        while running:
-            time.sleep(1.0)
-            active_symbols = list(orchestrator.brokers.keys())
-
-            if not active_symbols:
-                orchestrator.feed_status = "IDLE_MONITORING"
-                if not standby_logged:
-                    monitoring_server.log_activity(
-                        "INFO",
-                        "MONITOR",
-                        "No candidate IPOs currently active. Standby mode active - select any IPO from 13-Rule Matrix tab.",
-                    )
-                    standby_logged = True
-                continue
-
-            standby_logged = False
-            for sym in active_symbols:
-                if sym not in current_prices:
-                    matched_ipo = next((ipo for ipo in orchestrator.registered_ipos if str(ipo.get("symbol", "")).upper() == sym), None)
+    # Simulated Market Feed Loop (ONLY active if --feed sim is explicitly requested)
+    if args.feed == "sim":
+        def simulated_market_ticker_loop():
+            """Ensure continuous simulated ticks flow every second during offline simulation."""
+            current_prices: dict[str, float] = {}
+            opening_prices: dict[str, float] = {}
+            for c in candidates:
+                sym = c.get("symbol", "").upper()
+                try:
+                    ip = float(c.get("issue_price", 100.0))
+                except Exception:
                     ip = 100.0
-                    if matched_ipo:
-                        try:
-                            ip = float(matched_ipo.get("issue_price", 100.0))
-                        except Exception:
-                            ip = 100.0
-                    if ip <= 0:
+                current_prices[sym] = ip
+                opening_prices[sym] = ip
+
+            for sym in prepared_symbols:
+                if sym not in current_prices:
+                    current_prices[sym] = 100.0
+                    opening_prices[sym] = 100.0
+
+            tick_count = 0
+            standby_logged = False
+            while running:
+                time.sleep(1.0)
+                active_symbols = list(orchestrator.brokers.keys())
+
+                if not active_symbols:
+                    orchestrator.feed_status = "IDLE_MONITORING"
+                    if not standby_logged:
+                        monitoring_server.log_activity(
+                            "INFO",
+                            "MONITOR",
+                            "No candidate IPOs currently active. Standby mode active - select any IPO from 13-Rule Matrix tab.",
+                        )
+                        standby_logged = True
+                    continue
+
+                standby_logged = False
+                for sym in active_symbols:
+                    if sym not in current_prices:
+                        matched_ipo = next((ipo for ipo in orchestrator.registered_ipos if str(ipo.get("symbol", "")).upper() == sym), None)
                         ip = 100.0
-                    current_prices[sym] = ip
-                    opening_prices[sym] = ip
+                        if matched_ipo:
+                            try:
+                                ip = float(matched_ipo.get("issue_price", 100.0))
+                            except Exception:
+                                ip = 100.0
+                        if ip <= 0:
+                            ip = 100.0
+                        current_prices[sym] = ip
+                        opening_prices[sym] = ip
 
-            now = datetime.now()
-
-            # If real Angel One ticks have not arrived in the last 2 seconds, stream dynamic paper tick
-            if args.feed != "angel" and (time.time() - last_live_tick[0] >= 1.5):
-                orchestrator.feed_status = "STREAMING_LIVE"
-                if orchestrator.feed_source_name == "LIVE_MARKET_FEED":
-                    orchestrator.feed_source_name = "LIVE_STREAMING"
+                now = datetime.now()
+                orchestrator.feed_status = "SIMULATED_STREAMING"
+                orchestrator.feed_source_name = "SIMULATED_ENGINE"
 
                 for sym in active_symbols:
                     p = current_prices[sym]
@@ -311,11 +342,14 @@ def main():
                         monitoring_server.log_activity(
                             "INFO",
                             "TICK",
-                            f"Live tick for {sym}: Rs.{p:.2f} | Vol: {vol} | Ticks: {tick_count}",
+                            f"Simulated tick for {sym}: Rs.{p:.2f} | Vol: {vol} | Ticks: {tick_count}",
                         )
 
-    ticker_thread = threading.Thread(target=live_market_ticker_loop, name="LiveMarketTickerThread", daemon=True)
-    ticker_thread.start()
+        ticker_thread = threading.Thread(target=simulated_market_ticker_loop, name="SimulatedMarketTickerThread", daemon=True)
+        ticker_thread.start()
+        logger.info("Simulation mode active (--feed sim). Feeding simulated ticks.")
+    else:
+        logger.info(f"Market feed mode '{args.feed}': Pure live feed active (Synthetic fallback disabled).")
 
     try:
         orchestrator.start()
