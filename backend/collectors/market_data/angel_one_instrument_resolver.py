@@ -79,39 +79,52 @@ class AngelOneInstrumentResolver:
 
         symbol = symbol.upper().strip()
 
-        # First try exact match.
-        for instrument in self._instruments:
-            if (
-                instrument.get("exch_seg") == exchange
-                and instrument.get("symbol", "").upper() == symbol
-            ):
-                return instrument
+        # Angel One instrument type suffixes used for equities / IPOs.
+        # ponytail: cover common IPO suffix variants in one pass.
+        # Ceiling: pull this list from the instrument master metadata.
+        _SUFFIXES = ("-EQ", "-SM", "-ST", "-BE", "-BZ", "-N1", "-N2")
 
-        # IPO symbols may be stored without the Angel One
-        # security suffix, e.g. HORIZONIND -> HORIZONIND-EQ.
-        candidates = [
-            instrument
-            for instrument in self._instruments
-            if (
-                instrument.get("exch_seg") == exchange
-                and instrument.get("instrumenttype") == ""
-                and instrument.get("symbol", "").upper()
-                in {
-                    f"{symbol}-EQ",
-                    f"{symbol}-ST",
-                }
-            )
-        ]
+        def _search(exch: str) -> dict | None:
+            # 1. Exact match on the raw symbol.
+            for inst in self._instruments:
+                if (
+                    inst.get("exch_seg") == exch
+                    and inst.get("symbol", "").upper() == symbol
+                ):
+                    return inst
 
-        if not candidates:
-            raise ValueError(
-                f"Instrument not found: "
-                f"{exchange}:{symbol}"
-            )
+            # 2. Suffix variants — prefer -EQ, then take first match.
+            candidates = [
+                inst for inst in self._instruments
+                if (
+                    inst.get("exch_seg") == exch
+                    and inst.get("symbol", "").upper() in {
+                        f"{symbol}{sfx}" for sfx in _SUFFIXES
+                    }
+                )
+            ]
 
-        # Prefer normal equity when both EQ and ST exist.
-        for instrument in candidates:
-            if instrument.get("symbol", "").upper() == f"{symbol}-EQ":
-                return instrument
+            if not candidates:
+                return None
 
-        return candidates[0]
+            # Prefer normal equity.
+            for inst in candidates:
+                if inst.get("symbol", "").upper() == f"{symbol}-EQ":
+                    return inst
+
+            return candidates[0]
+
+        result = _search(exchange)
+        if result is not None:
+            return result
+
+        # Fallback: try the other exchange (BSE ↔ NSE).
+        other = "BSE" if exchange == "NSE" else "NSE"
+        result = _search(other)
+        if result is not None:
+            return result
+
+        raise ValueError(
+            f"Instrument not found: {exchange}:{symbol} "
+            f"(also tried {other})"
+        )

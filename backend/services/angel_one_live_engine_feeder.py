@@ -57,13 +57,16 @@ class AngelOneLiveEngineFeeder:
         token = str(tick_data.get("token", "")).strip()
         symbol = self.token_to_symbol.get(token)
 
-        # If token not in map, check if symbol was already provided in tick_data
+        # Fallback: symbol explicitly provided in tick (from /api/tick or UI inject)
         if not symbol:
             raw_sym = tick_data.get("symbol")
             if raw_sym and isinstance(raw_sym, str):
                 normalized_sym = raw_sym.strip().upper()
                 if normalized_sym in self.engine.pipelines:
                     symbol = normalized_sym
+                    # Opportunistically learn this token for future ticks.
+                    if token:
+                        self.token_to_symbol[token] = symbol
 
         if not symbol or symbol not in self.engine.pipelines:
             self.ticks_dropped += 1
@@ -79,8 +82,11 @@ class AngelOneLiveEngineFeeder:
             self.ticks_dropped += 1
             return None
 
-        volume = tick_data.get("volume", 0)
-        if not isinstance(volume, int) or volume < 0:
+        # mode=3 (Full Snap Quote) may deliver volume as float; coerce safely.
+        raw_vol = tick_data.get("volume", 0)
+        try:
+            volume = max(0, int(raw_vol))
+        except (TypeError, ValueError):
             volume = 0
 
         engine_tick = {
@@ -98,6 +104,13 @@ class AngelOneLiveEngineFeeder:
             self.last_error = str(e)
             self.ticks_dropped += 1
             return None
+
+    def register_token(self, token: str, symbol: str) -> None:
+        """Map an Angel One instrument token to a trading symbol at runtime."""
+        token = str(token).strip()
+        symbol = str(symbol).strip().upper()
+        if token and symbol:
+            self.token_to_symbol[token] = symbol
 
     def start(self) -> None:
         """Start the engine and optionally connect the underlying WebSocket."""

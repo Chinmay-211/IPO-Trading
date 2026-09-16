@@ -121,6 +121,7 @@ class IPOListingDayOrchestrator:
             raw_symbol = str(ipo["symbol"]).strip().upper()
 
             # Resolve token from instrument resolver
+            token = ""
             try:
                 instrument = self.resolver.find(raw_symbol)
                 token = str(instrument.get("token", "")).strip()
@@ -130,6 +131,16 @@ class IPOListingDayOrchestrator:
 
             if token:
                 self.token_to_symbol[token] = raw_symbol
+            else:
+                # ponytail: log the miss so the operator sees it in the event feed.
+                # Ceiling: implement BSE token fallback or manual token override in UI.
+                import sys
+                print(
+                    f"[WARNING] No Angel One instrument token resolved for '{raw_symbol}'. "
+                    "Live ticks cannot be matched. Check the local instrument master file "
+                    "or add 'token' to the candidate IPO dict.",
+                    file=sys.stderr,
+                )
 
             broker = PaperBroker(slippage_pct=self.slippage_pct)
             executor = StrategyExecutor(broker)

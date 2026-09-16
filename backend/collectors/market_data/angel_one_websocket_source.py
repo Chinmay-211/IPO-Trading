@@ -194,7 +194,10 @@ class AngelOneWebSocketSource:
             return
 
         correlation_id = "ipo_live_market"
-        mode = 1  # LTP
+        # ponytail: mode=3 (Full Snap Quote) to get volume per tick.
+        # Mode 1 (LTP-only) never sends volume → strategy volume-confirmation
+        # step never fires. Upgrade ceiling: switch to depth feed if needed.
+        mode = 3  # Full Snap Quote — includes volume
 
         self.websocket.subscribe(
             correlation_id,
@@ -306,21 +309,25 @@ class AngelOneWebSocketSource:
         except (TypeError, ValueError):
             volume = 0
 
-        return {
+        result: dict[str, Any] = {
             "token": str(token),
-            "symbol": message.get(
-                "symbol",
-                str(token),
-            ),
-            "exchange": message.get(
-                "exchange_type",
-                "NSE",
-            ),
             "timestamp": normalized_timestamp,
             "price": price,
             "volume": volume,
             "raw": message,
         }
+
+        # Only include "symbol" when the exchange actually sends one.
+        # Never fall back to the token number — that breaks feeder resolution.
+        raw_symbol = message.get("symbol")
+        if raw_symbol and str(raw_symbol).strip():
+            result["symbol"] = str(raw_symbol).strip().upper()
+
+        exchange = message.get("exchange_type")
+        if exchange:
+            result["exchange"] = exchange
+
+        return result
 
     @staticmethod
     def _parse_timestamp(

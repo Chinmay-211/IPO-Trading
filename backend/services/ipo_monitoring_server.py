@@ -2217,6 +2217,10 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             else:
                 market_msg = "Continuous Trading Session. Zero Mainboard IPOs listing today."
 
+            feeder_stats = {}
+            if orchestrator.feeder is not None:
+                feeder_stats = orchestrator.feeder.get_stats()
+
             self._send_json(
                 200,
                 {
@@ -2234,6 +2238,8 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                     "latest_prices": latest_prices,
                     "next_scheduled_ipo": next_ipo,
                     "market_message": market_msg,
+                    "feeder": feeder_stats,
+                    "token_map": orchestrator.token_to_symbol,
                 },
             )
             return
