@@ -140,14 +140,15 @@ class IPOLiveListingStrategyController:
                 open_price=open_price,
             )
 
-        if len(self.candles) < self.OBSERVATION_CANDLES:
-            return None
-
         if not self.confirmed:
             self._check_dip(
                 low_price
             )
 
+        if len(self.candles) < self.OBSERVATION_CANDLES:
+            return None
+
+        if not self.confirmed:
             if self.dip_low is None:
                 return None
 

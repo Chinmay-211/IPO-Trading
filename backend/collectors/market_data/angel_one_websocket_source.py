@@ -3,6 +3,9 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import pyotp
 from SmartApi import SmartConnect
@@ -178,17 +181,34 @@ class AngelOneWebSocketSource:
         Authenticate if necessary and start the WebSocket.
 
         SmartWebSocketV2.connect() blocks while the socket is active.
+        On disconnect, the reconnect manager retries with backoff.
         """
+        from backend.services.websocket_reconnect_manager import WebSocketReconnectManager
+
+        # ponytail: one reconnect manager per connect() call; unlimited retries
+        # during market hours. Ceiling: add a market-hours gate to stop retrying
+        # after 15:30 IST.
+        self._reconnect_mgr = WebSocketReconnectManager(
+            base_delay=2.0,
+            max_delay=30.0,
+            max_retries=999,
+        )
+        self._closed = False
 
         if self.smart_api is None:
             self.authenticate()
 
-        self.websocket = self._build_websocket()
+        self._do_connect()
 
-        self.websocket.connect()
+    def _do_connect(self) -> None:
+        """Build and start the WebSocket (called on first connect and each reconnect)."""
+        self.websocket = self._build_websocket()
+        self.websocket.connect()  # blocks until the socket closes
 
     def _on_open(self, wsapp) -> None:
         """Subscribe once the WebSocket connection is established."""
+        if hasattr(self, "_reconnect_mgr"):
+            self._reconnect_mgr.on_connected()
 
         if not self._subscriptions:
             return
@@ -219,25 +239,67 @@ class AngelOneWebSocketSource:
 
         self.on_tick(tick)
 
-    @staticmethod
     def _on_error(
+        self,
         wsapp,
         error,
     ) -> None:
-        """WebSocket error callback."""
+        """WebSocket error — log and let _on_close handle reconnect."""
         import sys
         sys.stderr.write(f"\n[ERROR] Angel One SmartWebSocketV2 error: {error}\n")
         sys.stderr.flush()
 
-    @staticmethod
     def _on_close(
+        self,
         wsapp,
     ) -> None:
-        """WebSocket close callback."""
+        """WebSocket closed — reconnect with exponential backoff in a daemon thread."""
+        import sys
+        import threading
 
-        print(
-            "Angel One WebSocket closed."
-        )
+        if getattr(self, "_closed", True):
+            return  # explicit close() called — don't reconnect
+
+        sys.stderr.write("\n[WARN] Angel One WebSocket closed. Scheduling reconnect...\n")
+        sys.stderr.flush()
+
+        def _reconnect_loop():
+            mgr = getattr(self, "_reconnect_mgr", None)
+            if mgr is None:
+                return
+
+            while not getattr(self, "_closed", True):
+                delay = mgr.get_backoff_delay()
+                sys.stderr.write(
+                    f"[RECONNECT] Waiting {delay:.1f}s before reconnect "
+                    f"(attempt {mgr.retry_count + 1}/{mgr.max_retries})...\n"
+                )
+                sys.stderr.flush()
+                import time as _time
+                _time.sleep(delay)
+
+                try:
+                    # Re-authenticate: JWT and feedToken expire; always refresh.
+                    self.authenticate()
+                    self._do_connect()
+                    mgr.total_reconnects += 1
+                    mgr.on_connected()
+                    sys.stderr.write("[RECONNECT] Angel One WebSocket reconnected.\n")
+                    sys.stderr.flush()
+                    return  # _do_connect blocks until next disconnect
+                except Exception as exc:
+                    mgr.retry_count += 1
+                    mgr.last_error = str(exc)
+                    sys.stderr.write(f"[RECONNECT] Attempt failed: {exc}\n")
+                    sys.stderr.flush()
+
+        threading.Thread(
+            target=_reconnect_loop,
+            name="AngelOneWSReconnect",
+            daemon=True,
+        ).start()
+
+
 
     @staticmethod
     def _normalize_message(
@@ -296,7 +358,7 @@ class AngelOneWebSocketSource:
         )
 
         if normalized_timestamp is None:
-            normalized_timestamp = datetime.now()
+            normalized_timestamp = datetime.now(tz=IST)
 
         volume = (
             message.get("volume_trade_for_the_day")
@@ -337,28 +399,33 @@ class AngelOneWebSocketSource:
             return None
 
         if isinstance(value, datetime):
-            return value
+            if value.tzinfo is None:
+                return value.replace(tzinfo=IST)
+            return value.astimezone(IST)
 
         if isinstance(value, (int, float)):
             try:
-                return datetime.fromtimestamp(
-                    value / 1000
-                )
+                # Millisecond epoch timestamp from exchange converted to IST
+                sec = value / 1000 if value > 10_000_000_000 else value
+                return datetime.fromtimestamp(sec, tz=IST)
             except (ValueError, OSError):
                 return None
 
         if isinstance(value, str):
             try:
-                return datetime.fromisoformat(
-                    value
-                )
+                dt = datetime.fromisoformat(value)
+                if dt.tzinfo is None:
+                    return dt.replace(tzinfo=IST)
+                return dt.astimezone(IST)
             except ValueError:
                 return None
 
         return None
 
     def close(self) -> None:
-        """Close the active WebSocket connection."""
+        """Close the active WebSocket connection (no reconnect)."""
+
+        self._closed = True  # stop reconnect loop
 
         if self.websocket is None:
             return

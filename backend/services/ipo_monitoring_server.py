@@ -1936,31 +1936,58 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
           const isGreen = c.close_price >= c.open_price;
           const color = isGreen ? '#10b981' : '#ef4444';
+          const strokeColor = isGreen ? '#34d399' : '#f87171';
 
-          // Wick
+          // Body: provide minimum 5px visible height so flat candles never disappear
+          const isDoji = Math.abs(yClose - yOpen) < 4;
+          const bodyHeight = isDoji ? 5 : Math.max(5, Math.abs(yClose - yOpen));
+          const bodyTop = isDoji ? (yOpen - 2.5) : Math.min(yOpen, yClose);
+
+          // Wick: ensure at least 6px visible span
+          let wTop = yHigh;
+          let wBottom = yLow;
+          if (wBottom - wTop < 6) {
+            wTop = bodyTop - 3;
+            wBottom = bodyTop + bodyHeight + 3;
+          }
+
+          // Draw wick
           ctx.strokeStyle = color;
           ctx.lineWidth = c._isActive ? 2 : 1.5;
           ctx.beginPath();
-          ctx.moveTo(x, yHigh);
-          ctx.lineTo(x, yLow);
+          ctx.moveTo(x, wTop);
+          ctx.lineTo(x, wBottom);
           ctx.stroke();
 
-          // Body
+          // Draw body with contrasting border
           ctx.fillStyle = color;
-          const bodyTop = Math.min(yOpen, yClose);
-          const bodyHeight = Math.max(2, Math.abs(yClose - yOpen));
           ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+
+          // Candle time marker below chart floor
+          if (c.timestamp) {
+            const rawTs = String(c.timestamp);
+            const timePart = rawTs.includes('T') ? rawTs.split('T')[1].substring(0, 5) : (rawTs.includes(' ') ? rawTs.split(' ')[1].substring(0, 5) : '');
+            if (timePart && (allCandles.length <= 12 || idx % Math.ceil(allCandles.length / 8) === 0 || idx === allCandles.length - 1)) {
+              ctx.fillStyle = '#64748b';
+              ctx.font = '10px monospace';
+              ctx.textAlign = 'center';
+              ctx.fillText(timePart, x, height - 10);
+            }
+          }
 
           if (c._isActive) {
             ctx.strokeStyle = '#38bdf8';
             ctx.lineWidth = 2;
-            ctx.strokeRect(x - candleWidth / 2 - 1, bodyTop - 1, candleWidth + 2, bodyHeight + 2);
+            ctx.strokeRect(x - candleWidth / 2 - 2, bodyTop - 2, candleWidth + 4, bodyHeight + 4);
 
             // Active live tag above candle
             ctx.fillStyle = '#38bdf8';
-            ctx.font = '9px monospace';
+            ctx.font = 'bold 9px monospace';
             ctx.textAlign = 'center';
-            ctx.fillText('LIVE', x, Math.min(yHigh, bodyTop) - 6);
+            ctx.fillText('LIVE', x, Math.min(wTop, bodyTop) - 6);
           }
         });
       }
@@ -2221,6 +2248,13 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             if orchestrator.feeder is not None:
                 feeder_stats = orchestrator.feeder.get_stats()
 
+            ws_stats = {}
+            ws_src = getattr(orchestrator, "ws_source", None)
+            if ws_src is not None:
+                mgr = getattr(ws_src, "_reconnect_mgr", None)
+                if mgr is not None:
+                    ws_stats = mgr.get_stats()
+
             self._send_json(
                 200,
                 {
@@ -2240,8 +2274,10 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                     "market_message": market_msg,
                     "feeder": feeder_stats,
                     "token_map": orchestrator.token_to_symbol,
+                    "ws_reconnect": ws_stats,
                 },
             )
+
             return
 
         if path == "/api/ipos":

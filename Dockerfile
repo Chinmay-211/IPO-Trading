@@ -4,13 +4,14 @@ FROM python:3.11-slim
 # Prevent python from buffering stdout/stderr and writing bytecode
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Kolkata \
     HOST=0.0.0.0 \
     PORT=5050
 
 WORKDIR /app
 
-# Install openssl for optional self-signed HTTPS on direct IP
-RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+# Install openssl and tzdata for Indian Standard Time and optional HTTPS
+RUN apt-get update && apt-get install -y --no-install-recommends openssl tzdata && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies first for optimal Docker layer caching
 COPY requirements.txt .

@@ -23,6 +23,9 @@ import threading
 import time
 from datetime import datetime, date
 from typing import Any
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -383,15 +386,70 @@ def main():
         monitoring_server.log_activity("INFO", "ORCHESTRATOR", "Session started. Continuous 1-minute candle building active.")
 
         last_console_report = time.time()
+        last_tick_count = [0]
+        last_tick_time = [time.time()]
+        FREEZE_TIMEOUT = 120  # seconds — reconnect if no new ticks in 2 min
+
         while running:
             time.sleep(1)
+
+            engine_state = orchestrator.engine.get_state() if orchestrator.engine else {}
+            current_ticks = engine_state.get("ticks_processed", 0)
+
+            # Update last-tick timestamp whenever the count advances.
+            if current_ticks > last_tick_count[0]:
+                last_tick_count[0] = current_ticks
+                last_tick_time[0] = time.time()
+
+            # Tick-freeze watchdog: detect silent WS disconnect in IST market hours.
+            now_dt = datetime.now(IST)
+            in_market_hours = (
+                now_dt.weekday() < 5
+                and 10 <= now_dt.hour < 15
+                or (now_dt.hour == 15 and now_dt.minute < 30)
+            )
+            frozen_secs = time.time() - last_tick_time[0]
+            if (
+                in_market_hours
+                and ws_source is not None
+                and frozen_secs > FREEZE_TIMEOUT
+                and last_tick_count[0] > 0  # had ticks before; now frozen
+            ):
+                logger.warning(
+                    f"[WATCHDOG] No ticks for {frozen_secs:.0f}s — forcing WS reconnect."
+                )
+                monitoring_server.log_activity(
+                    "WARNING",
+                    "MARKET",
+                    f"Tick freeze detected ({frozen_secs:.0f}s). Forcing WebSocket reconnect.",
+                )
+                last_tick_time[0] = time.time()  # reset so we don't spam
+                try:
+                    ws_source.close()  # triggers _on_close → reconnect thread
+                    ws_source._closed = False  # re-arm reconnect
+                    import threading as _t
+                    _t.Thread(
+                        target=ws_source.connect,
+                        name="AngelOneWSReconnectWatchdog",
+                        daemon=True,
+                    ).start()
+                except Exception as _exc:
+                    logger.error(f"[WATCHDOG] Reconnect failed: {_exc}")
+
             # Periodic live status in console every 10s
             if time.time() - last_console_report >= 10:
                 last_console_report = time.time()
-                engine_state = orchestrator.engine.get_state() if orchestrator.engine else {}
                 pnl, pos = orchestrator.get_portfolio_state()
-                prices_summary = ", ".join(f"{s}: Rs.{p.get('price', 0):.2f}" for s, p in orchestrator.latest_prices.items())
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Live Ticks: {engine_state.get('ticks_processed', 0)} | Candles: {engine_state.get('candles_completed', 0)} | PnL: Rs.{pnl:.2f} | {prices_summary}")
+                prices_summary = ", ".join(
+                    f"{s}: Rs.{p.get('price', 0):.2f}"
+                    for s, p in orchestrator.latest_prices.items()
+                )
+                print(
+                    f"[{now_dt.strftime('%H:%M:%S')}] Live Ticks: {current_ticks} | "
+                    f"Candles: {engine_state.get('candles_completed', 0)} | "
+                    f"PnL: Rs.{pnl:.2f} | {prices_summary}"
+                )
+
     finally:
         logger.info("Shutting down session...")
         orchestrator.close_eod(datetime.now())
