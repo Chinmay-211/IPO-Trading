@@ -4,6 +4,7 @@ import base64
 import hmac
 import json
 import os
+import sys
 import threading
 from datetime import datetime, date, time as dt_time
 from zoneinfo import ZoneInfo
@@ -1431,7 +1432,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const nextIpo = (globalData.status && globalData.status.next_scheduled_ipo) || null;
         const nextIpoHtml = nextIpo
           ? `<div>📅 <strong>Next Scheduled Mainboard Listing:</strong> <span style="color:var(--cyan); font-weight:700;">${nextIpo.company_name} (${nextIpo.symbol})</span> on <span style="color:#fff; font-weight:600;">${nextIpo.listing_date}</span>${nextIpo.issue_price ? ' (Issue Price: ₹' + nextIpo.issue_price + ')' : ''}.</div>`
-          : `<div>📅 <strong>Next Scheduled Mainboard Listing:</strong> <span style="color:var(--cyan); font-weight:700;">Pranav Constructions Ltd. (PRANAV)</span> on <span style="color:#fff; font-weight:600;">Tuesday, 15-Sep-2026</span>.</div>`;
+          : `<div>📅 <strong>Upcoming Mainboard Listings:</strong> <span style="color:#94a3b8;">No upcoming Mainboard listings scheduled in registry today. Check 13-Rule Screening Matrix.</span></div>`;
         const actualMarketMsg = (globalData.status && globalData.status.market_message) || (isWk ? 'The NSE & BSE exchanges are closed on Saturdays and Sundays. <strong>Zero Mainboard IPOs are scheduled to list today.</strong>' : 'Continuous trading runs on NSE from 10:00 AM to 15:30 PM IST. <strong>No new IPOs are scheduled for listing today.</strong>');
 
         grid.innerHTML = `
@@ -1716,6 +1717,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
 
     let activeChartRenderId = 0;
+    let chartFetchInProgress = false;
 
     function onChartSymbolChange() {
       activeChartRenderId++;
@@ -1743,7 +1745,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         }
       }
 
-      const reqId = ++activeChartRenderId;
       const targetSymbol = symbol;
 
       if (!targetSymbol) {
@@ -1759,7 +1760,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const nextIpo = (globalData.status && globalData.status.next_scheduled_ipo) || null;
         const nextText = nextIpo
           ? `Next Scheduled Mainboard Listing: ${nextIpo.company_name} (${nextIpo.symbol}) on ${nextIpo.listing_date}`
-          : 'Next Scheduled Mainboard Listing: Pranav Constructions Ltd. (PRANAV) on Tuesday, 15-Sep-2026';
+          : 'Operational Standby: No Mainboard IPO listings scheduled today';
 
         ctx.fillStyle = isWk ? '#f59e0b' : '#38bdf8';
         ctx.font = 'bold 15px -apple-system, BlinkMacSystemFont, sans-serif';
@@ -1788,14 +1789,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         return;
       }
 
+      if (chartFetchInProgress) return;
+      chartFetchInProgress = true;
+
       let candles = [];
       let currentCandle = null;
       let latestPrice = null;
       let issuePrice = null;
       try {
         const res = await apiFetch(`/api/candles?symbol=${targetSymbol}`).then(r => r.json());
-        // ponytail: race-condition guard. Discard response if user switched to another IPO.
-        if (reqId !== activeChartRenderId || (select && select.value !== targetSymbol)) {
+        if (select && select.value !== targetSymbol) {
           return;
         }
         candles = res.candles || [];
@@ -1803,17 +1806,24 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         latestPrice = res.latest_price || null;
         issuePrice = res.issue_price || null;
       } catch (e) {
-        if (reqId !== activeChartRenderId) return;
         candles = [];
+      } finally {
+        chartFetchInProgress = false;
       }
 
-      if (reqId !== activeChartRenderId || (select && select.value !== targetSymbol)) {
+      if (select && select.value !== targetSymbol) {
         return;
       }
 
       if (!issuePrice && globalData.ipos && globalData.ipos.registered_ipos) {
         const match = globalData.ipos.registered_ipos.find(r => r.symbol === symbol);
         if (match && match.issue_price) issuePrice = match.issue_price;
+      }
+      if (!issuePrice && Array.isArray(globalData.matrix)) {
+        const mMatch = globalData.matrix.find(m => m.symbol === symbol || (m.company_name && m.company_name.toUpperCase().includes(symbol)));
+        if (mMatch && mMatch.issue_price && mMatch.issue_price !== 'TBD') {
+          issuePrice = parseFloat(mMatch.issue_price);
+        }
       }
 
       const allCandles = candles.slice();
@@ -2129,7 +2139,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           if (chartTab && chartTab.classList.contains('active')) {
             renderChart();
           }
-        }, 1000);
+        }, ms);
       }
     }
 
@@ -2180,6 +2190,15 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
     Authenticated HTTP request handler enforcing HTTP Basic Authorization,
     production security headers, IP rate limiting, and brute-force protection.
     """
+
+    def handle(self) -> None:
+        """Handle request while cleanly catching client socket dropouts."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # ponytail: Client disconnected prematurely (closed browser tab, refreshed page).
+            # Harmless network event; avoid bubbling to socketserver.handle_error traceback.
+            pass
 
     def log_message(self, format: str, *args: Any) -> None:
         """Quiet server logging."""
@@ -2321,27 +2340,28 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                 except Exception:
                     market_state = "CONTINUOUS"
 
-            # Dynamically resolve next upcoming scheduled IPO from local SQLite database
+            # Dynamically resolve next upcoming scheduled IPO from screening matrix
             next_ipo = None
             try:
-                from backend.storage.database import get_connection
-                conn = get_connection()
-                try:
-                    today_str = now.strftime("%Y-%m-%d")
-                    row = conn.execute(
-                        """
-                        SELECT symbol, company_name, listing_date, issue_price
-                        FROM ipos
-                        WHERE listing_date > ? AND symbol IS NOT NULL AND trim(symbol) != ''
-                        ORDER BY listing_date ASC, id ASC
-                        LIMIT 1
-                        """,
-                        (today_str,),
-                    ).fetchone()
-                    if row:
-                        next_ipo = dict(row)
-                finally:
-                    conn.close()
+                matrix_items = get_recent_screening_matrix(limit=10, upcoming_only=True)
+                for item in matrix_items:
+                    ld = str(item.get("listing_date") or "").strip()
+                    if ld and ld.upper() != "TBD":
+                        next_ipo = {
+                            "symbol": item.get("symbol") or "",
+                            "company_name": item.get("company_name"),
+                            "listing_date": ld,
+                            "issue_price": item.get("issue_price") if item.get("issue_price") != "TBD" else None,
+                        }
+                        break
+                if not next_ipo and matrix_items:
+                    item = matrix_items[0]
+                    next_ipo = {
+                        "symbol": item.get("symbol") or "",
+                        "company_name": item.get("company_name"),
+                        "listing_date": item.get("listing_date", "TBD"),
+                        "issue_price": item.get("issue_price") if item.get("issue_price") != "TBD" else None,
+                    }
             except Exception:
                 pass
 
@@ -2808,6 +2828,16 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": f"POST '{path}' not supported."})
 
 
+class MonitoringHTTPServer(ThreadingHTTPServer):
+    """Threading HTTPServer that suppresses noisy tracebacks for routine client disconnects."""
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        _, exc, _ = sys.exc_info()
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class IPOMonitoringServer:
     """
     Lightweight, production-hardened real-time monitoring web server for IPO trading.
@@ -2837,7 +2867,7 @@ class IPOMonitoringServer:
         effective_rpm = int(rate_limit_rpm) if rate_limit_rpm is not None else int(os.getenv("RATE_LIMIT_RPM", "1200"))
         self.rate_limiter = SecurityRateLimiter(max_rpm=effective_rpm)
         self.is_ssl = False
-        self.httpd: ThreadingHTTPServer | None = None
+        self.httpd: MonitoringHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.activity_logs: list[dict[str, Any]] = [
             {
@@ -2873,7 +2903,7 @@ class IPOMonitoringServer:
 
         bind_port = self.port
         try:
-            self.httpd = ThreadingHTTPServer((self.host, bind_port), IPOMonitoringHandler)
+            self.httpd = MonitoringHTTPServer((self.host, bind_port), IPOMonitoringHandler)
             self.port = self.httpd.server_port
         except OSError as exc:
             raise OSError(

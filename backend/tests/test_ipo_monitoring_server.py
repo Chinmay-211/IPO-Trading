@@ -406,3 +406,39 @@ def test_api_simulate_trade(running_server):
         assert len(data["orders"]) >= 1
 
 
+def test_client_disconnect_handled_gracefully(monkeypatch):
+    """Ensure BrokenPipeError and client disconnections are suppressed without logging tracebacks."""
+    from backend.services.ipo_monitoring_server import MonitoringHTTPServer, IPOMonitoringHandler
+
+    server = MonitoringHTTPServer(("127.0.0.1", 0), IPOMonitoringHandler)
+    try:
+        called = False
+
+        def fake_super_handle_error(self, req, addr):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr("http.server.ThreadingHTTPServer.handle_error", fake_super_handle_error)
+
+        try:
+            raise BrokenPipeError(32, "Broken pipe")
+        except BrokenPipeError:
+            server.handle_error(None, ("152.57.6.233", 62082))
+        assert not called, "BrokenPipeError should be silently suppressed by MonitoringHTTPServer"
+
+        try:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        except ConnectionResetError:
+            server.handle_error(None, ("152.57.6.233", 62082))
+        assert not called, "ConnectionResetError should be silently suppressed"
+
+        try:
+            raise RuntimeError("Unexpected server bug")
+        except RuntimeError:
+            server.handle_error(None, ("152.57.6.233", 62082))
+        assert called, "Unexpected exceptions should still be handled normally"
+    finally:
+        server.server_close()
+
+
+

@@ -62,22 +62,30 @@ def get_candidate_ipos(target_date: str | None = None) -> list[dict]:
 
 def get_next_scheduled_ipo(from_date: str | None = None) -> dict | None:
     """Find the next scheduled Mainboard IPO strictly after from_date."""
-    d_str = from_date or date.today().strftime("%Y-%m-%d")
-    conn = get_connection()
     try:
-        row = conn.execute(
-            """
-            SELECT symbol, company_name, listing_date, issue_price
-            FROM ipos
-            WHERE listing_date > ? AND symbol IS NOT NULL AND trim(symbol) != ''
-            ORDER BY listing_date ASC, id ASC
-            LIMIT 1
-            """,
-            (d_str,),
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+        from backend.services.ipo_monitoring_server import get_recent_screening_matrix
+        matrix_items = get_recent_screening_matrix(limit=10, upcoming_only=True)
+        for item in matrix_items:
+            ld = str(item.get("listing_date") or "").strip()
+            if ld and ld.upper() != "TBD":
+                return {
+                    "symbol": item.get("symbol") or "",
+                    "company_name": item.get("company_name"),
+                    "listing_date": ld,
+                    "issue_price": item.get("issue_price") if item.get("issue_price") != "TBD" else None,
+                }
+        if matrix_items:
+            item = matrix_items[0]
+            return {
+                "symbol": item.get("symbol") or "",
+                "company_name": item.get("company_name"),
+                "listing_date": item.get("listing_date", "TBD"),
+                "issue_price": item.get("issue_price") if item.get("issue_price") != "TBD" else None,
+            }
+    except Exception:
+        pass
+    return None
+
 
 
 def ensure_live_ipos_discovered(logger) -> None:
