@@ -1938,7 +1938,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       drawHLine(stopLevel, '#ef4444', 'SL (3%)');
 
       if (activePrice) {
-        drawHLine(activePrice, '#10b981', 'LIVE LTP', false);
+        // Use dashed line so LIVE LTP doesn't mask candle bodies when overlapping OPEN
+        drawHLine(activePrice, '#10b981', 'LIVE LTP', true);
       }
 
       if (allCandles.length > 0) {
@@ -1955,14 +1956,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           const yHigh = getY(c.high_price);
           const yLow = getY(c.low_price);
 
-          const isGreen = c.close_price >= c.open_price;
-          const color = isGreen ? '#10b981' : '#ef4444';
-          const strokeColor = isGreen ? '#34d399' : '#f87171';
+          const isUp = c.close_price > c.open_price;
+          const isDown = c.close_price < c.open_price;
+          const isFlat = !isUp && !isDown;
 
-          // Body: provide minimum 5px visible height so flat candles never disappear
-          const isDoji = Math.abs(yClose - yOpen) < 4;
-          const bodyHeight = isDoji ? 5 : Math.max(5, Math.abs(yClose - yOpen));
-          const bodyTop = isDoji ? (yOpen - 2.5) : Math.min(yOpen, yClose);
+          // Distinct colors: Green for gain, Red for drop, Slate/Silver for flat Doji
+          const color = isFlat ? '#94a3b8' : (isUp ? '#10b981' : '#ef4444');
+          const strokeColor = isFlat ? '#e2e8f0' : (isUp ? '#34d399' : '#f87171');
+
+          // Body: real doji has 2px crossbar, moving candles have distinct body height
+          const isDoji = Math.abs(yClose - yOpen) < 3;
+          const bodyHeight = isDoji ? 2 : Math.max(4, Math.abs(yClose - yOpen));
+          const bodyTop = isDoji ? (yOpen - 1) : Math.min(yOpen, yClose);
 
           // Wick: ensure at least 6px visible span
           let wTop = yHigh;
