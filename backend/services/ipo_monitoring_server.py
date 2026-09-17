@@ -467,13 +467,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .legend-item { display: flex; align-items: center; gap: 6px; }
     .legend-line { width: 14px; height: 2px; }
 
-    canvas {
+    .chart-scroll-wrapper {
       width: 100%;
-      height: 330px;
-      display: block;
+      overflow-x: auto;
+      overflow-y: hidden;
       background: #090d14;
       border-radius: 8px;
       border: 1px solid #1a2433;
+      scrollbar-width: thin;
+      scrollbar-color: #334155 #090d14;
+    }
+    .chart-scroll-wrapper::-webkit-scrollbar {
+      height: 6px;
+    }
+    .chart-scroll-wrapper::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 3px;
+    }
+
+    canvas {
+      height: 330px;
+      display: block;
+      background: #090d14;
     }
 
     /* Selected IPO Cards Grid */
@@ -933,7 +948,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <div class="legend-item"><span class="legend-line" style="background:var(--red);"></span> Stop-Loss (3% Max)</div>
         </div>
       </div>
-      <canvas id="candleChart"></canvas>
+      <div class="chart-scroll-wrapper" id="chartScrollWrapper">
+        <canvas id="candleChart"></canvas>
+      </div>
       <div style="display:flex; justify-content:space-between; margin-top:10px; font-size:12px; color:var(--muted);">
         <div id="chart-info">Waiting for 1-minute candle completion...</div>
         <div>Continuous Trading 1-Minute Interval (NSE / BSE)</div>
@@ -1799,24 +1816,34 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         if (match && match.issue_price) issuePrice = match.issue_price;
       }
 
-      const ctx = canvas.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
-
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
-
-      const width = rect.width;
-      const height = rect.height;
-      ctx.clearRect(0, 0, width, height);
-
       const allCandles = candles.slice();
       if (currentCandle) {
         allCandles.push(Object.assign({}, currentCandle, { _isActive: true }));
       }
 
       const activePrice = latestPrice || (currentCandle ? currentCandle.close_price : (candles.length > 0 ? candles[candles.length - 1].close_price : null));
+
+      // ponytail: scrollable canvas with fixed 28px pitch & 16px candle width.
+      // Candles never shrink or distort; horizontal scroll allows browsing unlimited history.
+      const wrapper = document.getElementById('chartScrollWrapper');
+      const containerWidth = wrapper ? wrapper.clientWidth : 800;
+      const step = 28;
+      const candleWidth = 16;
+      const neededWidth = Math.max(containerWidth, 60 + allCandles.length * step + 90);
+      const height = 330;
+      const wasAtEnd = wrapper ? (wrapper.scrollWidth - wrapper.clientWidth - wrapper.scrollLeft < 40) : true;
+
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+
+      canvas.style.width = neededWidth + 'px';
+      canvas.style.height = height + 'px';
+      canvas.width = neededWidth * dpr;
+      canvas.height = height * dpr;
+      ctx.scale(dpr, dpr);
+
+      const width = neededWidth;
+      ctx.clearRect(0, 0, width, height);
 
       document.getElementById('chart-info').innerText =
         `Symbol: ${symbol} | LTP: ${activePrice ? '₹' + Number(activePrice).toFixed(2) : (issuePrice ? 'Base ₹' + Number(issuePrice).toFixed(2) : '--')} | Completed 1m: ${candles.length} | Active Candle: ${currentCandle ? '🟢 Forming Live' : 'Ready'} | Baseline: First 5 Candles`;
@@ -1952,6 +1979,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         ctx.fillStyle = color;
         ctx.font = '10px monospace';
         ctx.textAlign = 'left';
+        // Draw label at left margin so it is visible when viewing early candles
+        ctx.fillText(`${label} ₹${price.toFixed(1)}`, 45, y - 3);
+        // Also draw label at right edge near the latest live candle
         ctx.fillText(`${label} ₹${price.toFixed(1)}`, width - 75, y + 3);
         ctx.restore();
       }
@@ -1967,12 +1997,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
 
       if (allCandles.length > 0) {
-        // ponytail: natural trading pitch. Prevent stretching 2-3 early candles across the whole screen.
-        // Ceiling: interactive pan & zoom controls for 100+ candles.
-        const minSlots = 35;
-        const step = Math.min(28, (width - 140) / Math.max(allCandles.length, minSlots));
-        const candleWidth = Math.max(8, Math.round(step * 0.65));
-
         allCandles.forEach((c, idx) => {
           const x = 50 + idx * step + step / 2;
           const yOpen = getY(c.open_price);
@@ -2020,7 +2044,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           if (c.timestamp) {
             const rawTs = String(c.timestamp);
             const timePart = rawTs.includes('T') ? rawTs.split('T')[1].substring(0, 5) : (rawTs.includes(' ') ? rawTs.split(' ')[1].substring(0, 5) : '');
-            if (timePart && (allCandles.length <= 12 || idx % Math.ceil(allCandles.length / 8) === 0 || idx === allCandles.length - 1)) {
+            if (timePart && (allCandles.length <= 15 || idx % 2 === 0 || idx === allCandles.length - 1)) {
               ctx.fillStyle = '#64748b';
               ctx.font = '10px monospace';
               ctx.textAlign = 'center';
@@ -2040,6 +2064,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             ctx.fillText('LIVE', x, Math.min(wTop, bodyTop) - 6);
           }
         });
+      }
+
+      // Auto-scroll to the latest active candle on the right if user was already at end
+      if (wrapper && wasAtEnd && neededWidth > containerWidth) {
+        wrapper.scrollLeft = wrapper.scrollWidth - wrapper.clientWidth;
       }
     }
 
