@@ -919,7 +919,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="chart-header">
         <div style="display:flex; align-items:center; gap:12px;">
           <label style="font-size:12px; color:var(--muted); font-weight:700;">ACTIVE CANDLESTICK IPO:</label>
-          <select id="chart-symbol-select" class="form-control" style="width:180px;" onchange="renderChart()">
+          <select id="chart-symbol-select" class="form-control" style="width:180px;" onchange="onChartSymbolChange()">
             <option value="">(Loading candidates...)</option>
           </select>
           <span id="chart-strategy-badge" class="badge badge-open">STRATEGY: 13-RULE BREAKOUT</span>
@@ -1351,12 +1351,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         chartSelect.innerHTML = '<option value="">(Standby - 0 IPOs listing today)</option>';
       } else {
         const existingOptions = Array.from(chartSelect.options).map(o => o.value).filter(Boolean);
-        const symbolsChanged = existingOptions.length !== symbols.length || !symbols.every((s, i) => s === existingOptions[i]);
-        if (symbolsChanged) {
+        const setExisting = new Set(existingOptions);
+        const setNew = new Set(symbols);
+        const optionsNeedUpdate = setExisting.size !== setNew.size || ![...setNew].every(s => setExisting.has(s));
+
+        if (optionsNeedUpdate) {
           chartSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
-          chartSelect.value = (currChart && symbols.includes(currChart)) ? currChart : symbols[0];
-        } else if (!chartSelect.value && symbols.length > 0) {
-          chartSelect.value = symbols[0];
+          chartSelect.value = (currChart && setNew.has(currChart)) ? currChart : symbols[0];
+        } else if (currChart && setNew.has(currChart)) {
+          chartSelect.value = currChart;
         }
       }
 
@@ -1695,26 +1698,38 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }).join('');
     }
 
+    let activeChartRenderId = 0;
+
+    function onChartSymbolChange() {
+      activeChartRenderId++;
+      renderChart();
+    }
+
     function selectChartSymbol(sym) {
-      document.getElementById('chart-symbol-select').value = sym;
+      const select = document.getElementById('chart-symbol-select');
+      if (select) select.value = sym;
+      activeChartRenderId++;
       switchTab('chart');
     }
 
     // Dynamic Candlestick Chart Rendering
     async function renderChart() {
-      let symbol = document.getElementById('chart-symbol-select').value;
+      const select = document.getElementById('chart-symbol-select');
+      let symbol = select ? select.value : '';
       const canvas = document.getElementById('candleChart');
       if (!canvas) return;
 
       if (!symbol) {
-        const select = document.getElementById('chart-symbol-select');
         if (select && select.options.length > 0 && select.options[0].value) {
           select.selectedIndex = 0;
           symbol = select.value;
         }
       }
 
-      if (!symbol) {
+      const reqId = ++activeChartRenderId;
+      const targetSymbol = symbol;
+
+      if (!targetSymbol) {
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
@@ -1761,13 +1776,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       let latestPrice = null;
       let issuePrice = null;
       try {
-        const res = await apiFetch(`/api/candles?symbol=${symbol}`).then(r => r.json());
+        const res = await apiFetch(`/api/candles?symbol=${targetSymbol}`).then(r => r.json());
+        // ponytail: race-condition guard. Discard response if user switched to another IPO.
+        if (reqId !== activeChartRenderId || (select && select.value !== targetSymbol)) {
+          return;
+        }
         candles = res.candles || [];
         currentCandle = res.current_candle || null;
         latestPrice = res.latest_price || null;
         issuePrice = res.issue_price || null;
       } catch (e) {
+        if (reqId !== activeChartRenderId) return;
         candles = [];
+      }
+
+      if (reqId !== activeChartRenderId || (select && select.value !== targetSymbol)) {
+        return;
       }
 
       if (!issuePrice && globalData.ipos && globalData.ipos.registered_ipos) {
@@ -2704,8 +2728,19 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                         issue_p = float(r.get("issue_price"))
                         break
 
+            # ponytail: use active live market price as simulation anchor if trading live,
+            # so synthetic test candles align with market reality instead of creating a 100pt wick to issue_price.
+            live_p = None
+            if hasattr(orchestrator, "latest_prices") and sym in orchestrator.latest_prices:
+                live_p = orchestrator.latest_prices[sym].get("price")
+            if not live_p and orchestrator.engine and hasattr(orchestrator.engine, "candle_builder"):
+                ac = getattr(orchestrator.engine.candle_builder, "_active", {}).get(sym)
+                if ac:
+                    live_p = ac.close
+
+            p = float(live_p) if (live_p and float(live_p) > 0) else issue_p
+
             today_d = date.today()
-            p = issue_p
             ticks = [
                 (0, p, 5000), (0, p * 1.002, 5000),
                 (1, p * 1.005, 6000),
