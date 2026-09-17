@@ -1942,8 +1942,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
 
       if (allCandles.length > 0) {
-        const candleWidth = Math.max(8, Math.min(26, (width - 120) / allCandles.length - 4));
-        const step = (width - 120) / allCandles.length;
+        // ponytail: natural trading pitch. Prevent stretching 2-3 early candles across the whole screen.
+        // Ceiling: interactive pan & zoom controls for 100+ candles.
+        const minSlots = 35;
+        const step = Math.min(28, (width - 140) / Math.max(allCandles.length, minSlots));
+        const candleWidth = Math.max(8, Math.round(step * 0.65));
 
         allCandles.forEach((c, idx) => {
           const x = 50 + idx * step + step / 2;
