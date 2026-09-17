@@ -239,7 +239,17 @@ class IPOListingDayOrchestrator:
         # Track in registered_ipos if not already present
         clean_ipo = dict(ipo)
         clean_ipo["symbol"] = raw_symbol
-        if not any(str(r.get("symbol", "")).upper() == raw_symbol for r in self.registered_ipos):
+        clean_ipo["token"] = token if token else None
+        clean_ipo["token_status"] = "RESOLVED" if token else "UNLISTED"
+
+        # Update existing record or append
+        replaced = False
+        for i, r in enumerate(self.registered_ipos):
+            if str(r.get("symbol", "")).upper() == raw_symbol:
+                self.registered_ipos[i] = clean_ipo
+                replaced = True
+                break
+        if not replaced:
             self.registered_ipos.append(clean_ipo)
 
         return raw_symbol
@@ -265,6 +275,14 @@ class IPOListingDayOrchestrator:
             self.token_to_symbol.pop(tok, None)
             if self.feeder is not None:
                 self.feeder.token_to_symbol.pop(tok, None)
+
+        if self.ws_source is not None and tokens_to_del:
+            try:
+                unsub = getattr(self.ws_source, "unsubscribe_nse", None)
+                if callable(unsub):
+                    unsub(tokens_to_del)
+            except Exception:
+                pass
 
         return True
 

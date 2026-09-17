@@ -387,3 +387,22 @@ def test_screening_matrix_chronological_listing_date_order(monkeypatch):
     assert matrix[2]["company_name"] == "TBD Listing IPO Ltd."
     assert matrix[2]["listing_date"] == "TBD"
 
+
+def test_api_simulate_trade(running_server):
+    orchestrator, base_url, _ = running_server
+    payload = json.dumps({"symbol": "ARCIL"}).encode("utf-8")
+    req = auth_request(
+        f"{base_url}/api/simulate_trade",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req) as response:
+        assert response.status == 200
+        data = json.loads(response.read().decode("utf-8"))
+        assert data["status"] == "OK"
+        assert data["symbol"] == "ARCIL"
+        assert data["candles_completed"] >= 5
+        assert len(data["orders"]) >= 1
+
+

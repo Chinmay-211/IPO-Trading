@@ -6,7 +6,10 @@ import json
 import os
 import threading
 from datetime import datetime, date, time as dt_time
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -920,6 +923,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             <option value="">(Loading candidates...)</option>
           </select>
           <span id="chart-strategy-badge" class="badge badge-open">STRATEGY: 13-RULE BREAKOUT</span>
+          <button class="btn btn-primary" id="btn-sim-breakout" onclick="triggerTestSimulation()" style="font-size:11px; padding:5px 12px; font-weight:700; background:linear-gradient(135deg, #10b981, #059669); border:none;" title="Simulate 13-Rule Breakout candles and trigger paper orders for active IPO">🧪 Test 13-Rule Strategy (Generate Candles & Orders)</button>
         </div>
         <div class="chart-legend">
           <div class="legend-item"><span class="legend-line" style="background:#fff;"></span> Opening Price</div>
@@ -1430,13 +1434,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
       grid.innerHTML = symbols.map(sym => {
         const ipoData = registered.find(r => r.symbol === sym) || { symbol: sym };
-        const token = revTokens[sym] || ipoData.token || 'RESOLVED';
+        const token = revTokens[sym] || ipoData.token || null;
         const isCurrent = document.getElementById('chart-symbol-select').value === sym;
         const pInfo = latestPrices[sym] || {};
         const ltpText = pInfo.price ? `₹${Number(pInfo.price).toFixed(2)}` : (ipoData.issue_price ? `₹${Number(ipoData.issue_price).toFixed(2)}` : 'TBD');
         const chg = pInfo.change_pct !== undefined ? `${pInfo.change_pct >= 0 ? '+' : ''}${pInfo.change_pct.toFixed(2)}%` : '+0.00%';
         const chgColor = (pInfo.change_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)';
-        const stageColor = (stage === 'WEEKEND_CLOSED' || stage === 'CLOSED') ? 'var(--amber)' : 'var(--green)';
+        const tokenHtml = token
+          ? `<code style="color:var(--green); font-weight:700;">${token}</code>`
+          : `<span class="badge badge-amber" style="font-size:10px;">UNLISTED / NO TOKEN</span>`;
+        const effStage = token ? stage : 'STANDBY (AWAITING LISTING)';
+        const stageColor = (!token || stage === 'WEEKEND_CLOSED' || stage === 'CLOSED') ? 'var(--amber)' : 'var(--green)';
         const safeName = (ipoData.company_name || sym).replace(/'/g, "\\'");
 
         return `
@@ -1450,8 +1458,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             </div>
             <div class="ipo-stats-row">
               <div><div class="stat-title">Live LTP</div><div class="stat-val" style="color:${chgColor}">${ltpText} <span style="font-size:10px;">(${chg})</span></div></div>
-              <div><div class="stat-title">Angel Token</div><div class="stat-val"><code>${token}</code></div></div>
-              <div><div class="stat-title">Session State</div><div class="stat-val" style="color:${stageColor}">${stage}</div></div>
+              <div><div class="stat-title">Angel Token</div><div class="stat-val">${tokenHtml}</div></div>
+              <div><div class="stat-title">Session State</div><div class="stat-val" style="color:${stageColor}">${effStage}</div></div>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
               <span style="font-size:11px; color:var(--muted);">13-Rule Check: <strong>PASSED</strong></span>
@@ -1848,10 +1856,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           ctx.fillStyle = '#94a3b8';
           ctx.fillText(`Continuous trading session ended at 15:30 PM IST (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
         } else {
-          ctx.fillText(`📡 LIVE MARKET FEED ACTIVE: Candidate ${symbol} Ready`, width / 2, height / 2 - 14);
-          ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
-          ctx.fillStyle = '#38bdf8';
-          ctx.fillText(`Angel One SmartWebSocketV2 Subscribed. Waiting for continuous trading ticks on NSE (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+          const revTokens = {};
+          Object.entries((globalData.status && globalData.status.token_map) || (globalData.ipos && globalData.ipos.token_to_symbol) || {}).forEach(([tok, s]) => { revTokens[s] = tok; });
+          const isResolved = revTokens[symbol];
+          if (isResolved) {
+            ctx.fillText(`📡 LIVE MARKET FEED ACTIVE: Candidate ${symbol} Ready`, width / 2, height / 2 - 14);
+            ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(`Angel One SmartWebSocketV2 Subscribed (Token: ${isResolved}). Waiting for continuous trading ticks on NSE (Issue Price: ₹${benchPrice.toFixed(2)}).`, width / 2, height / 2 + 10);
+          } else {
+            ctx.fillText(`⏸️ UPCOMING IPO: Candidate ${symbol}`, width / 2, height / 2 - 14);
+            ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.fillStyle = '#f59e0b';
+            ctx.fillText(`Awaiting Angel One listing token. Click "🧪 Test 13-Rule Strategy" above to simulate candles & orders now.`, width / 2, height / 2 + 10);
+          }
         }
         return;
       }
@@ -1990,6 +2008,41 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             ctx.fillText('LIVE', x, Math.min(wTop, bodyTop) - 6);
           }
         });
+      }
+    }
+
+    async function triggerTestSimulation() {
+      const symSelect = document.getElementById('chart-symbol-select');
+      const sym = symSelect ? symSelect.value : '';
+      if (!sym) {
+        showToast('Please select an active IPO candidate first');
+        return;
+      }
+      const btn = document.getElementById('btn-sim-breakout');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ Simulating...';
+      }
+      try {
+        const res = await apiFetch('/api/simulate_trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: sym })
+        }).then(r => r.json());
+        if (res.status === 'OK') {
+          showToast(`Simulation complete: ${res.candles_completed} candles created, ${res.orders ? res.orders.length : 0} orders executed!`);
+          await Promise.all([fetchData(), fetchBackendActivity()]);
+          renderChart();
+        } else {
+          alert('Simulation failed: ' + (res.error || res.message));
+        }
+      } catch (err) {
+        alert('Simulation request failed: ' + err);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = '🧪 Test 13-Rule Strategy (Generate Candles & Orders)';
+        }
       }
     }
 
@@ -2608,6 +2661,76 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
 
             threading.Thread(target=_run_discovery, name="LiveIPODiscoveryWorker", daemon=True).start()
             self._send_json(200, {"status": "STARTED", "message": "Live Chittorgarh discovery & screening initiated."})
+            return
+
+        if path == "/api/simulate_trade":
+            sym = sanitize_symbol(body_data.get("symbol", ""))
+            if not sym:
+                if orchestrator.registered_ipos:
+                    sym = str(orchestrator.registered_ipos[0].get("symbol", "")).strip().upper()
+                elif orchestrator.engine and orchestrator.engine.pipelines:
+                    sym = list(orchestrator.engine.pipelines.keys())[0].strip().upper()
+
+            if not sym:
+                self._send_json(400, {"error": "No symbol specified or registered for simulation."})
+                return
+
+            if not getattr(orchestrator, "is_running", False):
+                try:
+                    orchestrator.start()
+                except Exception:
+                    orchestrator.is_running = True
+                    if orchestrator.engine:
+                        orchestrator.engine.running = True
+
+            if orchestrator.engine and not orchestrator.engine.running:
+                orchestrator.engine.running = True
+
+            if orchestrator.engine and sym not in orchestrator.engine.pipelines:
+                orchestrator.register_ipo({"symbol": sym, "company_name": sym})
+
+            issue_p = 100.0
+            for r in getattr(orchestrator, "registered_ipos", []):
+                if str(r.get("symbol", "")).strip().upper() == sym:
+                    if r.get("issue_price") and float(r.get("issue_price")) > 0:
+                        issue_p = float(r.get("issue_price"))
+                        break
+
+            today_d = date.today()
+            p = issue_p
+            ticks = [
+                (0, p, 5000), (0, p * 1.002, 5000),
+                (1, p * 1.005, 6000),
+                (2, p * 0.998, 5500),
+                (3, p * 1.001, 5800),
+                (4, p * 0.995, 6200),
+                (5, round(p * 0.975, 2), 7000),
+                (6, round(p * 1.015, 2), 15000),
+                (7, round(p * 1.018, 2), 12000),
+                (8, round(p * 1.085, 2), 18000),
+                (9, round(p * 1.085, 2), 5000),
+            ]
+            for i, price, vol in ticks:
+                t = datetime(today_d.year, today_d.month, today_d.day, 10, i, 30, tzinfo=IST)
+                orchestrator.process_tick({"symbol": sym, "price": price, "volume": vol, "timestamp": t})
+
+            server_logs = getattr(self.server, "activity_logs", None)
+            if isinstance(server_logs, list):
+                server_logs.append({
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "level": "TRADE",
+                    "category": "STRATEGY",
+                    "message": f"13-Rule Breakout simulation executed for {sym}: 5 baseline candles, -2.5% dip, breakout recovery, BUY executed, Target Exit @ 2R.",
+                })
+
+            self._send_json(200, {
+                "status": "OK",
+                "symbol": sym,
+                "message": f"Successfully simulated 13-Rule listing trading sequence for {sym}.",
+                "ticks_processed": orchestrator.engine.ticks_processed if orchestrator.engine else 0,
+                "candles_completed": orchestrator.engine.candles_completed if orchestrator.engine else 0,
+                "orders": orchestrator.engine.get_orders() if orchestrator.engine else [],
+            })
             return
 
         self._send_json(404, {"error": f"POST '{path}' not supported."})

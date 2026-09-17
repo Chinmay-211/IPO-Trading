@@ -144,12 +144,57 @@ class AngelOneWebSocketSource:
                 "No valid NSE tokens were supplied."
             )
 
+        # Merge with existing subscriptions so previous tokens aren't lost
+        current_tokens = []
+        if self._subscriptions and isinstance(self._subscriptions, list):
+            for sub in self._subscriptions:
+                if sub.get("exchangeType") == 1:
+                    current_tokens.extend(sub.get("tokens", []))
+
+        merged = list(dict.fromkeys(current_tokens + normalized_tokens))
         self._subscriptions = [
             {
                 "exchangeType": 1,
-                "tokens": normalized_tokens,
+                "tokens": merged,
             }
         ]
+
+        # If WebSocket is actively running, send subscribe frame immediately
+        if self.websocket is not None:
+            try:
+                self.websocket.subscribe(
+                    "ipo_live_market",
+                    3,  # mode 3 (Full Snap Quote)
+                    [{"exchangeType": 1, "tokens": normalized_tokens}],
+                )
+            except Exception as exc:
+                import sys
+                sys.stderr.write(f"[ERROR] Live WebSocket subscribe failed for {normalized_tokens}: {exc}\n")
+
+    def unsubscribe_nse(
+        self,
+        tokens: list[str],
+    ) -> None:
+        """Unregister NSE tokens from live WebSocket data."""
+        if not tokens or not self._subscriptions:
+            return
+
+        to_remove = {str(t).strip() for t in tokens if str(t).strip()}
+        for sub in self._subscriptions:
+            if sub.get("exchangeType") == 1:
+                sub["tokens"] = [t for t in sub.get("tokens", []) if t not in to_remove]
+
+        if self.websocket is not None:
+            try:
+                unsubscribe = getattr(self.websocket, "unsubscribe", None)
+                if callable(unsubscribe):
+                    unsubscribe(
+                        "ipo_live_market",
+                        3,
+                        [{"exchangeType": 1, "tokens": list(to_remove)}],
+                    )
+            except Exception:
+                pass
 
     def _build_websocket(self) -> SmartWebSocketV2:
         if not self.auth_token:

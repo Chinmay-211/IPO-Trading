@@ -78,6 +78,14 @@ class AngelOneInstrumentResolver:
         self._load_instruments()
 
         symbol = symbol.upper().strip()
+        # Common IPO discovery abbreviation aliases
+        _ALIASES = {
+            "ASSETRECON": "ARCIL",
+            "KARAMTARAE": "KARAMTARA",
+            "MANIPALPAY": "MPIMANIPAL",
+            "RENTOMOJOP": "RENTOMOJO",
+        }
+        symbol = _ALIASES.get(symbol, symbol)
 
         # Angel One instrument type suffixes used for equities / IPOs.
         # ponytail: cover common IPO suffix variants in one pass.
