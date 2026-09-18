@@ -144,3 +144,28 @@ def test_orchestrator_full_day_tick_sequence_and_eod_report():
     assert report["total_orders"] >= 1
     assert "ALPHAIPO" in report["ipo_breakdown"]
     assert report["ipo_breakdown"]["ALPHAIPO"]["orders_count"] >= 1
+
+
+def test_orchestrator_resolves_missing_tokens_dynamically():
+    mapping = {}
+    resolver = FakeResolver(mapping)
+    orchestrator = IPOListingDayOrchestrator(instrument_resolver=resolver)
+
+    # Initial session preparation before Angel One publishes the token
+    orchestrator.prepare_session([{"symbol": "VEEGALAND"}])
+    assert orchestrator.token_to_symbol == {}
+    assert len(orchestrator.registered_ipos) == 1
+
+    # Simulated market open / scrip master update: Angel One publishes the token
+    mapping["VEEGALAND"] = "766098"
+    mock_ws = Mock()
+    orchestrator.ws_source = mock_ws
+
+    resolved = orchestrator.resolve_missing_tokens()
+    assert resolved == ["VEEGALAND"]
+    assert orchestrator.token_to_symbol["766098"] == "VEEGALAND"
+    assert orchestrator.feeder.token_to_symbol["766098"] == "VEEGALAND"
+    assert orchestrator.registered_ipos[0]["token"] == "766098"
+    assert orchestrator.registered_ipos[0]["token_status"] == "RESOLVED"
+    mock_ws.subscribe_nse.assert_called_once_with(["766098"])
+

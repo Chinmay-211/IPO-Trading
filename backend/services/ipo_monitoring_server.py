@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import datetime, date, time as dt_time
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2327,6 +2328,22 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
             if orchestrator is None:
                 self._send_json(200, {"status": "UNCONFIGURED"})
                 return
+
+            # Auto-resolve tokens for candidate IPOs listing today on poll
+            now_ts = time.time()
+            last_resolve = getattr(orchestrator, "_last_missing_token_check", 0.0)
+            if (now_ts - last_resolve) >= 10:
+                orchestrator._last_missing_token_check = now_ts
+                if any(
+                    str(ipo.get("symbol", "")).strip().upper() not in orchestrator.token_to_symbol.values()
+                    for ipo in getattr(orchestrator, "registered_ipos", [])
+                ):
+                    try:
+                        resolve_fn = getattr(orchestrator, "resolve_missing_tokens", None)
+                        if callable(resolve_fn):
+                            resolve_fn()
+                    except Exception:
+                        pass
 
             engine_state = orchestrator.engine.get_state() if orchestrator.engine else {}
             latest_prices = getattr(orchestrator, "latest_prices", {})

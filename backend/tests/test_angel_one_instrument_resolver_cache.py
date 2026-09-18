@@ -203,3 +203,41 @@ def test_resolver_auto_heals_when_server_comes_back_online(tmp_path):
         patch.stopall()
 
 
+def test_resolver_handles_be_segment_and_bse_name_and_aliases(tmp_path):
+    cache_file = str(tmp_path / "instruments.json")
+    instruments = [
+        {
+            "token": "766098",
+            "symbol": "VEEGALAND-BE",
+            "name": "VEEGALAND",
+            "exch_seg": "NSE",
+            "instrumenttype": "",
+        },
+        {
+            "token": "544923",
+            "symbol": "544923",
+            "name": "VEEGALAND",
+            "exch_seg": "BSE",
+            "instrumenttype": "",
+        },
+    ]
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(instruments, f)
+
+    resolver = AngelOneInstrumentResolver(cache_path=cache_file)
+
+    # 1. Exact symbol base matching -BE suffix on NSE
+    res_nse = resolver.find("VEEGALAND")
+    assert res_nse["token"] == "766098"
+    assert res_nse["symbol"] == "VEEGALAND-BE"
+
+    # 2. Alias resolution from Chittorgarh scraped symbol VEEGALANDD
+    res_alias = resolver.find("VEEGALANDD")
+    assert res_alias["token"] == "766098"
+
+    # 3. BSE lookup matching ticker name when symbol is scrip code
+    res_bse = resolver.find("VEEGALAND", exchange="BSE")
+    assert res_bse["token"] == "544923"
+
+
+

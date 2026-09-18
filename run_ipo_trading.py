@@ -398,8 +398,30 @@ def main():
         last_tick_time = [time.time()]
         FREEZE_TIMEOUT = 120  # seconds — reconnect if no new ticks in 2 min
 
+        last_token_retry = 0.0
+
         while running:
             time.sleep(1)
+
+            # Auto-resolve tokens for listing day candidates every 10s if any are awaiting tokens
+            now_ts = time.time()
+            if (now_ts - last_token_retry) >= 10:
+                last_token_retry = now_ts
+                if any(
+                    str(ipo.get("symbol", "")).strip().upper() not in orchestrator.token_to_symbol.values()
+                    for ipo in orchestrator.registered_ipos
+                ):
+                    newly_resolved = orchestrator.resolve_missing_tokens()
+                    if newly_resolved:
+                        logger.info(
+                            f"Dynamically resolved listing token(s) for: {newly_resolved} "
+                            f"(Tokens: {orchestrator.token_to_symbol})"
+                        )
+                        monitoring_server.log_activity(
+                            "INFO",
+                            "ORCHESTRATOR",
+                            f"Listing token resolved dynamically for: {', '.join(newly_resolved)}",
+                        )
 
             engine_state = orchestrator.engine.get_state() if orchestrator.engine else {}
             current_ticks = engine_state.get("ticks_processed", 0)

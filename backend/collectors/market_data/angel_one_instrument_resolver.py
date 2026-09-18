@@ -88,6 +88,19 @@ class AngelOneInstrumentResolver:
 
         return False
 
+    @staticmethod
+    def _is_listing_window() -> bool:
+        """Check if currently in Indian IPO listing morning window (08:30 - 10:30 AM IST on weekdays)."""
+        try:
+            now_dt = datetime.now(IST)
+            if now_dt.weekday() >= 5:
+                return False
+            start = now_dt.replace(hour=8, minute=30, second=0, microsecond=0)
+            end = now_dt.replace(hour=10, minute=30, second=0, microsecond=0)
+            return start <= now_dt <= end
+        except Exception:
+            return False
+
     def _load_instruments(self, force_refresh: bool = False):
         if not force_refresh and not self._needs_refresh():
             return
@@ -105,11 +118,11 @@ class AngelOneInstrumentResolver:
             except Exception:
                 pass
 
-        # 2. Attempt remote download
+        # 2. Attempt remote download (38MB scrip master requires adequate timeout)
         try:
             response = requests.get(
                 INSTRUMENT_URL,
-                timeout=5,
+                timeout=30,
             )
             response.raise_for_status()
             data = response.json()
@@ -156,6 +169,8 @@ class AngelOneInstrumentResolver:
             "KARAMTARAE": "KARAMTARA",
             "MANIPALPAY": "MPIMANIPAL",
             "RENTOMOJOP": "RENTOMOJO",
+            "VEEGALANDD": "VEEGALAND",
+            "VEEGALANDDEV": "VEEGALAND",
         }
         symbol = _ALIASES.get(symbol, symbol)
 
@@ -165,11 +180,12 @@ class AngelOneInstrumentResolver:
         _SUFFIXES = ("-EQ", "-SM", "-ST", "-BE", "-BZ", "-N1", "-N2")
 
         def _search(exch: str) -> dict | None:
-            # 1. Exact match on the raw symbol.
+            # 1. Exact match on raw symbol, scrip token, or instrument name (BSE uses ticker as name).
             for inst in self._instruments:
-                if (
-                    inst.get("exch_seg") == exch
-                    and inst.get("symbol", "").upper() == symbol
+                if inst.get("exch_seg") == exch and (
+                    inst.get("symbol", "").upper() == symbol
+                    or inst.get("name", "").upper() == symbol
+                    or inst.get("token", "") == symbol
                 ):
                     return inst
 
@@ -204,11 +220,11 @@ class AngelOneInstrumentResolver:
         if result is not None:
             return result
 
-        # ponytail: on-miss live refresh. If symbol not found in current cache, retry once
-        # with a fresh remote pull (debounced by 300s to avoid hammering Angel One API).
-        # Ceiling: push notification / webhook on new listing scrips.
+        # ponytail: on-miss live refresh. During morning listing window (08:30-10:30 AM IST),
+        # debounce by 30s so newly published IPO tokens are acquired automatically in real time.
         now = time.time()
-        if (now - getattr(self, "_last_remote_fetch", 0)) > 300:
+        debounce = 30 if self._is_listing_window() else 300
+        if (now - getattr(self, "_last_remote_fetch", 0)) > debounce:
             try:
                 self._load_instruments(force_refresh=True)
                 result = _search(exchange) or _search(other)

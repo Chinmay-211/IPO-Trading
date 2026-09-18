@@ -55,7 +55,7 @@ class AngelOneInstrumentSource:
         try:
             response = requests.get(
                 INSTRUMENT_URL,
-                timeout=3,
+                timeout=30,
             )
             response.raise_for_status()
             data = response.json()

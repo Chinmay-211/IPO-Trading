@@ -254,6 +254,44 @@ class IPOListingDayOrchestrator:
 
         return raw_symbol
 
+    def resolve_missing_tokens(self) -> list[str]:
+        """
+        Scan registered IPOs that do not yet have an Angel One token in token_to_symbol,
+        and attempt re-resolution against the instrument master. Automatically subscribes
+        to WebSocket and updates feeder for newly resolved tokens.
+        """
+        # ponytail: dynamic token resolution for IPOs listing on market open.
+        # Ceiling: support manual token override via UI modal.
+        resolved_now: list[str] = []
+        known_symbols = set(self.token_to_symbol.values())
+        for i, ipo in enumerate(self.registered_ipos):
+            raw_symbol = str(ipo.get("symbol", "")).strip().upper()
+            if not raw_symbol or raw_symbol in known_symbols:
+                continue
+
+            token = ""
+            try:
+                instrument = self.resolver.find(raw_symbol)
+                token = str(instrument.get("token", "")).strip()
+            except Exception:
+                token = str(ipo.get("token") or "").strip()
+
+            if token:
+                self.token_to_symbol[token] = raw_symbol
+                if self.feeder is not None:
+                    self.feeder.token_to_symbol[token] = raw_symbol
+                if self.ws_source is not None:
+                    try:
+                        self.ws_source.subscribe_nse([token])
+                    except Exception:
+                        pass
+                self.registered_ipos[i]["token"] = token
+                self.registered_ipos[i]["token_status"] = "RESOLVED"
+                resolved_now.append(raw_symbol)
+                known_symbols.add(raw_symbol)
+
+        return resolved_now
+
     def unregister_ipo(self, symbol: str) -> bool:
         """
         Dynamically unregister an IPO from live trading pipelines.

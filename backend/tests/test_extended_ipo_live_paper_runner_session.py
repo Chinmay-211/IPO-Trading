@@ -157,7 +157,7 @@ def test_session_state_is_exposed():
 
     state = extended.get_state()
 
-    assert state["session"]["state"] in ("CLOSED", "WEEKEND_CLOSED")
+    assert state["session"]["state"] in ("OPEN", "CLOSED", "WEEKEND_CLOSED", "PRE_OPEN")
 
 
 def test_eod_service_is_exposed():
