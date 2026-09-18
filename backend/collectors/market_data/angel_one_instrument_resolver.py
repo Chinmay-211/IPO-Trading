@@ -90,13 +90,13 @@ class AngelOneInstrumentResolver:
 
     @staticmethod
     def _is_listing_window() -> bool:
-        """Check if currently in Indian IPO listing morning window (08:30 - 10:30 AM IST on weekdays)."""
+        """Check if currently in Indian IPO morning listing window (08:30 - 10:15 AM IST on weekdays)."""
         try:
             now_dt = datetime.now(IST)
             if now_dt.weekday() >= 5:
                 return False
             start = now_dt.replace(hour=8, minute=30, second=0, microsecond=0)
-            end = now_dt.replace(hour=10, minute=30, second=0, microsecond=0)
+            end = now_dt.replace(hour=10, minute=15, second=0, microsecond=0)
             return start <= now_dt <= end
         except Exception:
             return False

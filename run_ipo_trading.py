@@ -88,12 +88,13 @@ def get_next_scheduled_ipo(from_date: str | None = None) -> dict | None:
 
 
 
-def ensure_live_ipos_discovered(logger) -> None:
-    """Ensure database has real Mainboard IPOs and 13-rule screening runs from Chittorgarh."""
+def ensure_live_ipos_discovered(logger, force: bool = False) -> None:
+    """Ensure database has fresh Mainboard IPOs and 13-rule screening runs from Chittorgarh for today."""
     conn = get_connection()
+    today_str = date.today().strftime("%Y-%m-%d")
+    fresh_today = False
     try:
         # Strictly purge already-listed IPOs from past dates in active candidate table (ipos)
-        today_str = date.today().strftime("%Y-%m-%d")
         rows = conn.execute("SELECT id, listing_date FROM ipos WHERE listing_date IS NOT NULL AND listing_date != ''").fetchall()
         for r in rows:
             raw_d = str(r["listing_date"]).strip()
@@ -113,26 +114,39 @@ def ensure_live_ipos_discovered(logger) -> None:
 
         run_count = conn.execute("SELECT count(*) FROM ipo_screening_runs").fetchone()[0]
         ipo_count = conn.execute("SELECT count(*) FROM ipos").fetchone()[0]
+        latest_col = conn.execute("SELECT max(collected_at) FROM ipos").fetchone()[0]
+        fresh_today = bool(latest_col and str(latest_col).startswith(today_str))
     except Exception:
         run_count = 0
         ipo_count = 0
     finally:
         conn.close()
 
-    if run_count > 0 and ipo_count > 0:
-        logger.info(f"Database ready: {ipo_count} real Mainboard IPO(s) and {run_count} institutional screening run(s) loaded.")
-        return
+    # If data was collected today and we are not forcing a refresh, proceed
+    if not force and fresh_today and run_count > 0 and ipo_count > 0:
+        logger.info(f"Database ready: {ipo_count} real Mainboard IPO(s) and {run_count} institutional screening run(s) loaded (fresh today: {latest_col}).")
+    else:
+        logger.info("Pre-market check: Collecting fresh Indian Mainboard IPOs from Chittorgarh before market open...")
+        try:
+            from backend.services.ipo_discovery_service import IPODiscoveryService
+            from backend.services.ipo_screening_runner import IPOScreeningRunner
+            d_res = IPODiscoveryService().run()
+            logger.info(f"Live Chittorgarh scan: {d_res.get('fetched', 0)} real IPOs fetched, {d_res.get('inserted', 0)} new discoveries.")
+            s_res = IPOScreeningRunner().screen_all()
+            logger.info(f"13-Rule Institutional Screening evaluated {len(s_res)} real Mainboard IPOs.")
+        except Exception as ex:
+            logger.warning(f"Pre-market discovery scan: {ex}")
 
-    logger.info("Initializing real Indian Mainboard IPOs from Chittorgarh...")
+    # Ensure fresh Angel One instruments master is warmed for today
     try:
-        from backend.services.ipo_discovery_service import IPODiscoveryService
-        from backend.services.ipo_screening_runner import IPOScreeningRunner
-        d_res = IPODiscoveryService().run()
-        logger.info(f"Live Chittorgarh scan: {d_res.get('fetched', 0)} real IPOs fetched, {d_res.get('inserted', 0)} new discoveries.")
-        s_res = IPOScreeningRunner().screen_all()
-        logger.info(f"13-Rule Institutional Screening evaluated {len(s_res)} real Mainboard IPOs.")
-    except Exception as ex:
-        logger.warning(f"Startup discovery check: {ex}")
+        from backend.collectors.market_data.angel_one_instrument_resolver import AngelOneInstrumentResolver
+        resolver = AngelOneInstrumentResolver()
+        if not resolver._is_cache_valid():
+            logger.info("Pre-market: Refreshing Angel One instrument master for today's listing scrips...")
+            resolver._load_instruments(force_refresh=True)
+            logger.info(f"Angel One instrument master warmed ({len(resolver._instruments or [])} scrips).")
+    except Exception as exc:
+        logger.warning(f"Pre-market Angel One master warming: {exc}")
 
 
 def main():
@@ -399,12 +413,38 @@ def main():
         FREEZE_TIMEOUT = 120  # seconds — reconnect if no new ticks in 2 min
 
         last_token_retry = 0.0
+        active_day = [datetime.now(IST).strftime("%Y-%m-%d")]
+        last_premarket_refresh = [0.0]
 
         while running:
             time.sleep(1)
 
-            # Auto-resolve tokens for listing day candidates every 10s if any are awaiting tokens
+            now_dt = datetime.now(IST)
+            today_str = now_dt.strftime("%Y-%m-%d")
             now_ts = time.time()
+
+            # Automatic Pre-Market Fresh Data Collection (08:30 - 09:55 AM IST or date rollover)
+            day_changed = (today_str != active_day[0])
+            is_premarket = (now_dt.weekday() < 5 and (now_dt.hour == 8 and now_dt.minute >= 30 or now_dt.hour == 9))
+            if day_changed or (is_premarket and (now_ts - last_premarket_refresh[0]) >= 600):
+                active_day[0] = today_str
+                last_premarket_refresh[0] = now_ts
+                logger.info(f"[PRE-MARKET] Gathering fresh IPO discoveries and instrument master for {today_str}...")
+                try:
+                    ensure_live_ipos_discovered(logger, force=day_changed)
+                    if not (args.symbols or env_symbols):
+                        fresh_cands = get_candidate_ipos(today_str)
+                        if fresh_cands:
+                            orchestrator.prepare_session(fresh_cands)
+                            logger.info(f"[PRE-MARKET] Prepared {len(fresh_cands)} candidate IPO(s): {[c['symbol'] for c in fresh_cands]}")
+                            if ws_source is not None:
+                                tokens = list(orchestrator.token_to_symbol.keys())
+                                if tokens:
+                                    ws_source.subscribe_nse(tokens)
+                except Exception as _p_exc:
+                    logger.warning(f"[PRE-MARKET] Fresh data check warning: {_p_exc}")
+
+            # Auto-resolve tokens for listing day candidates every 10s if any are awaiting tokens
             if (now_ts - last_token_retry) >= 10:
                 last_token_retry = now_ts
                 if any(
