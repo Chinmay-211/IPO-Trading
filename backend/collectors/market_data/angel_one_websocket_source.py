@@ -144,17 +144,22 @@ class AngelOneWebSocketSource:
                 "No valid NSE tokens were supplied."
             )
 
+        # Support exchangeType mapping (1: NSE, 3: BSE)
+        exch = int(exchange_type) if exchange_type in (1, 3) else 1
+        
         # Merge with existing subscriptions so previous tokens aren't lost
         current_tokens = []
         if self._subscriptions and isinstance(self._subscriptions, list):
             for sub in self._subscriptions:
-                if sub.get("exchangeType") == 1:
+                if sub.get("exchangeType") == exch:
                     current_tokens.extend(sub.get("tokens", []))
 
         merged = list(dict.fromkeys(current_tokens + normalized_tokens))
-        self._subscriptions = [
+        # Keep other exchange subscriptions intact
+        other_subs = [s for s in self._subscriptions if s.get("exchangeType") != exch]
+        self._subscriptions = other_subs + [
             {
-                "exchangeType": 1,
+                "exchangeType": exch,
                 "tokens": merged,
             }
         ]
@@ -162,10 +167,11 @@ class AngelOneWebSocketSource:
         # If WebSocket is actively running, send subscribe frame immediately
         if self.websocket is not None:
             try:
+                # ponytail: correlationID must be <= 10 alphanumeric chars per Angel One SmartStream spec
                 self.websocket.subscribe(
-                    "ipo_live_market",
-                    3,  # mode 3 (Full Snap Quote)
-                    [{"exchangeType": 1, "tokens": normalized_tokens}],
+                    "ipo01",
+                    2,  # mode 2 (Quote: LTP + OHLC + Volume)
+                    [{"exchangeType": exch, "tokens": normalized_tokens}],
                 )
             except Exception as exc:
                 import sys
@@ -174,14 +180,16 @@ class AngelOneWebSocketSource:
     def unsubscribe_nse(
         self,
         tokens: list[str],
+        exchange_type: int = 1,
     ) -> None:
-        """Unregister NSE tokens from live WebSocket data."""
+        """Unregister tokens from live WebSocket data."""
         if not tokens or not self._subscriptions:
             return
 
+        exch = int(exchange_type) if exchange_type in (1, 3) else 1
         to_remove = {str(t).strip() for t in tokens if str(t).strip()}
         for sub in self._subscriptions:
-            if sub.get("exchangeType") == 1:
+            if sub.get("exchangeType") == exch:
                 sub["tokens"] = [t for t in sub.get("tokens", []) if t not in to_remove]
 
         if self.websocket is not None:
@@ -189,9 +197,9 @@ class AngelOneWebSocketSource:
                 unsubscribe = getattr(self.websocket, "unsubscribe", None)
                 if callable(unsubscribe):
                     unsubscribe(
-                        "ipo_live_market",
-                        3,
-                        [{"exchangeType": 1, "tokens": list(to_remove)}],
+                        "ipo01",
+                        2,
+                        [{"exchangeType": exch, "tokens": list(to_remove)}],
                     )
             except Exception:
                 pass
@@ -218,6 +226,20 @@ class AngelOneWebSocketSource:
         websocket.on_open = self._on_open
         websocket.on_error = self._on_error
         websocket.on_close = self._on_close
+
+        # ponytail: hook control & text messages so server-side warnings, errors, or rejects are visible
+        def _on_control(msg):
+            import sys
+            sys.stderr.write(f"[AngelOneWS Control] {msg}\n")
+            sys.stderr.flush()
+
+        def _on_text(wsapp, msg):
+            import sys
+            sys.stderr.write(f"[AngelOneWS Message] {msg}\n")
+            sys.stderr.flush()
+
+        websocket.on_control_message = _on_control
+        websocket.on_message = _on_text
 
         return websocket
 
@@ -258,11 +280,10 @@ class AngelOneWebSocketSource:
         if not self._subscriptions:
             return
 
-        correlation_id = "ipo_live_market"
-        # ponytail: mode=3 (Full Snap Quote) to get volume per tick.
-        # Mode 1 (LTP-only) never sends volume → strategy volume-confirmation
-        # step never fires. Upgrade ceiling: switch to depth feed if needed.
-        mode = 3  # Full Snap Quote — includes volume
+        # ponytail: correlation_id <= 10 alphanumeric chars per Angel One SmartStream spec
+        correlation_id = "ipo01"
+        # mode=2 (Quote) provides LTP, OHLC, and Volume without the depth/circuit limitations of mode 3
+        mode = 2
 
         self.websocket.subscribe(
             correlation_id,

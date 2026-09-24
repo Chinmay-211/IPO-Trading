@@ -2507,6 +2507,70 @@ class IPOMonitoringHandler(BaseHTTPRequestHandler):
                             }
                             latest_price = ac.close
 
+                    # ponytail: backfill today's 1m candles from Angel One REST API if in-memory buffer is empty.
+                    # Cache for 30s per symbol to prevent hitting API rate limits on rapid client polling.
+                    if not candles and getattr(orchestrator, "ws_source", None):
+                        token = None
+                        for tok, sym in getattr(orchestrator, "token_to_symbol", {}).items():
+                            if sym.upper() == target_symbol:
+                                token = tok
+                                break
+                        if not token and hasattr(orchestrator, "registered_ipos"):
+                            for r in orchestrator.registered_ipos:
+                                if str(r.get("symbol", "")).strip().upper() == target_symbol:
+                                    token = r.get("token") or r.get("symbol_token")
+                                    break
+
+                        cache = getattr(self.server, "_candle_rest_cache", None)
+                        if cache is None:
+                            cache = {}
+                            setattr(self.server, "_candle_rest_cache", cache)
+
+                        cached = cache.get(target_symbol)
+                        if cached and (time.time() - cached.get("time", 0)) < 30:
+                            candles = list(cached.get("candles", []))
+                            if candles and latest_price is None:
+                                latest_price = candles[-1]["close_price"]
+
+                        smart_api = getattr(orchestrator.ws_source, "smart_api", None)
+                        if not candles and token and smart_api:
+                            try:
+                                now_dt = datetime.now(IST)
+                                today_str = now_dt.strftime("%Y-%m-%d")
+                                if now_dt.hour > 9 or (now_dt.hour == 9 and now_dt.minute >= 15):
+                                    end_time = min(now_dt.strftime("%H:%M"), "15:30")
+                                    params = {
+                                        "exchange": "NSE",
+                                        "symboltoken": str(token),
+                                        "interval": "ONE_MINUTE",
+                                        "fromdate": f"{today_str} 09:15",
+                                        "todate": f"{today_str} {end_time}",
+                                    }
+                                    c_res = smart_api.getCandleData(params)
+                                    if c_res and isinstance(c_res, dict) and c_res.get("status") and c_res.get("data"):
+                                        for c in c_res["data"]:
+                                            candles.append({
+                                                "symbol": target_symbol,
+                                                "timestamp": c[0],
+                                                "open_price": float(c[1]),
+                                                "high_price": float(c[2]),
+                                                "low_price": float(c[3]),
+                                                "close_price": float(c[4]),
+                                                "volume": int(c[5]),
+                                                "interval": "1m",
+                                                "source": "ANGEL_REST",
+                                            })
+                                        if candles:
+                                            cache[target_symbol] = {"time": time.time(), "candles": list(candles)}
+                                            if latest_price is None:
+                                                latest_price = candles[-1]["close_price"]
+                                    elif c_res and not c_res.get("status"):
+                                        import sys
+                                        sys.stderr.write(f"[CANDLE_BACKFILL] Angel One rejected candle fetch for {target_symbol}: {c_res.get('message')}\n")
+                            except Exception as _c_err:
+                                import sys
+                                sys.stderr.write(f"[CANDLE_BACKFILL] Exception during candle backfill for {target_symbol}: {_c_err}\n")
+
                     if latest_price is None and hasattr(orchestrator, "latest_prices"):
                         p_info = orchestrator.latest_prices.get(target_symbol)
                         if not p_info:

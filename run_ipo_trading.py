@@ -479,24 +479,30 @@ def main():
                 or (now_dt.hour == 15 and now_dt.minute < 30)
             )
             frozen_secs = time.time() - last_tick_time[0]
+            # ponytail: 60s timeout if 0 ticks from startup; FREEZE_TIMEOUT (120s) once active
+            timeout = 60 if last_tick_count[0] == 0 else FREEZE_TIMEOUT
             if (
                 in_market_hours
                 and ws_source is not None
-                and frozen_secs > FREEZE_TIMEOUT
-                and last_tick_count[0] > 0  # had ticks before; now frozen
+                and frozen_secs > timeout
+                and getattr(orchestrator, "token_to_symbol", None)  # only if tokens are registered
             ):
                 logger.warning(
-                    f"[WATCHDOG] No ticks for {frozen_secs:.0f}s — forcing WS reconnect."
+                    f"[WATCHDOG] No ticks for {frozen_secs:.0f}s (total ticks: {last_tick_count[0]}) — forcing WS reconnect."
                 )
                 monitoring_server.log_activity(
                     "WARNING",
                     "MARKET",
-                    f"Tick freeze detected ({frozen_secs:.0f}s). Forcing WebSocket reconnect.",
+                    f"Tick freeze detected ({frozen_secs:.0f}s, {last_tick_count[0]} ticks). Forcing WebSocket reconnect.",
                 )
                 last_tick_time[0] = time.time()  # reset so we don't spam
                 try:
                     ws_source.close()  # triggers _on_close → reconnect thread
                     ws_source._closed = False  # re-arm reconnect
+                    # Ensure registered tokens are subscribed upon reconnect
+                    tokens = list(orchestrator.token_to_symbol.keys())
+                    if tokens:
+                        ws_source.subscribe_nse(tokens)
                     import threading as _t
                     _t.Thread(
                         target=ws_source.connect,
