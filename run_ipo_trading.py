@@ -362,37 +362,46 @@ def main():
                 f"Please define them in your .env file or run with --feed sim for offline simulation."
             )
 
-        try:
+        def _start_angel_feed():
+            nonlocal ws_source
+            backoff = 2.0
             from backend.collectors.market_data.angel_one_websocket_source import AngelOneWebSocketSource
-            ws_source = AngelOneWebSocketSource(on_tick=orchestrator.process_tick)
-            ws_source.authenticate()
-            tokens = list(orchestrator.token_to_symbol.keys())
-            if not prepared_symbols:
-                logger.info("0 candidate IPOs listing today. Zero NSE tokens required for listing-day subscription. Angel One WebSocket connected in standby mode.")
-            elif not tokens:
-                logger.warning(f"Could not resolve NSE instrument tokens for candidate symbols: {prepared_symbols} from Angel One master instruments.")
-            else:
-                ws_source.subscribe_nse(tokens)
-                logger.info(f"Angel One SmartWebSocketV2 subscribed to NSE tokens: {tokens} for candidates: {prepared_symbols}")
-            ws_thread = threading.Thread(target=ws_source.connect, name="AngelOneWSThread", daemon=True)
-            ws_thread.start()
-            orchestrator.ws_source = ws_source
-            logger.info(f"Angel One SmartWebSocketV2 connected & subscribed to NSE tokens: {tokens}")
-            orchestrator.feed_source_name = "ANGEL_ONE_WEBSOCKET"
-            orchestrator.feed_status = "STREAMING_LIVE"
-            monitoring_server.log_activity(
-                "INFO",
-                "MARKET",
-                f"Angel One WebSocket connected. Streaming {len(tokens)} token(s) live from NSE.",
-            )
-        except Exception as exc:
-            logger.error(f"Angel One live feed connection failed: {exc}")
-            monitoring_server.log_activity(
-                "ALERT",
-                "MARKET",
-                f"Angel One connection failed: {exc}",
-            )
-            raise RuntimeError(f"Angel One live feed failed: {exc}") from exc
+            while running:
+                try:
+                    logger.info("Connecting to Angel One live market feed...")
+                    orchestrator.feed_source_name = "ANGEL_ONE_WEBSOCKET"
+                    orchestrator.feed_status = "CONNECTING"
+                    if ws_source is None:
+                        ws_source = AngelOneWebSocketSource(on_tick=orchestrator.process_tick)
+                    ws_source.authenticate()
+                    tokens = list(orchestrator.token_to_symbol.keys())
+                    if tokens:
+                        ws_source.subscribe_nse(tokens)
+                        logger.info(f"Angel One SmartWebSocketV2 subscribed to tokens: {tokens} for candidates: {prepared_symbols}")
+                    else:
+                        logger.info("Zero tokens currently registered; WebSocket starting in standby mode.")
+                    orchestrator.ws_source = ws_source
+                    orchestrator.feed_status = "STREAMING_LIVE"
+                    monitoring_server.log_activity(
+                        "INFO",
+                        "MARKET",
+                        f"Angel One WebSocket connected. Streaming {len(tokens)} token(s) live from exchange.",
+                    )
+                    ws_source.connect()  # blocks while socket is active
+                    backoff = 2.0
+                except Exception as exc:
+                    logger.warning(f"Angel One live feed connection error: {exc}. Retrying in {backoff:.0f}s...")
+                    orchestrator.feed_status = f"RECONNECTING ({exc})"
+                    monitoring_server.log_activity(
+                        "WARNING",
+                        "MARKET",
+                        f"Angel One feed connection error: {exc}. Retrying in {backoff:.0f}s...",
+                    )
+                    time.sleep(backoff)
+                    backoff = min(30.0, backoff * 1.5)
+
+        ws_thread = threading.Thread(target=_start_angel_feed, name="AngelOneWSThread", daemon=True)
+        ws_thread.start()
 
     # Strict Zero Fake Simulation Policy: Real live Angel One WebSocket feed only
     if args.feed == "sim":

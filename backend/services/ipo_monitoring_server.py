@@ -1101,9 +1101,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
 
     function updateClock() {
-      const now = new Date();
-      document.getElementById('clock').innerText = now.toLocaleTimeString('en-GB') + ' IST';
-      updatePipelineTimeline();
+      try {
+        const now = new Date();
+        const cEl = document.getElementById('clock');
+        if (cEl) {
+          cEl.innerText = now.toLocaleTimeString('en-GB') + ' IST';
+        }
+        updatePipelineTimeline();
+      } catch (e) {
+        console.error('Clock error', e);
+      }
     }
     setInterval(updateClock, 1000);
     updateClock();
@@ -1283,7 +1290,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
         renderUI();
       } catch (err) {
-        // Handled in apiFetch
+        const statusTextEl = document.getElementById('live-status-text');
+        const dotEl = document.getElementById('live-dot');
+        if (statusTextEl) {
+          statusTextEl.innerText = 'OFFLINE: SERVER RECONNECTING...';
+          if (dotEl) {
+            dotEl.style.background = 'var(--red)';
+            dotEl.style.boxShadow = '0 0 8px var(--red)';
+          }
+        }
       }
     }
 

@@ -118,6 +118,7 @@ class AngelOneWebSocketSource:
     def subscribe_nse(
         self,
         tokens: list[str],
+        exchange_type: int = 1,
     ) -> None:
         """
         Register NSE tokens for live LTP data.
